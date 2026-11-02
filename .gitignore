@@ -12,6 +12,19 @@
 !*.md
 !*.sh
 !*.plist
+!docs/features/status.json
+!docs/features/supervised-travel-mode-readiness/proof/runs/**/*.json
+!docs/features/supervised-travel-mode-readiness/proof/runs/**/*.txt
+!scripts/proof_run_capture
+!scripts/validate_feature_queue
+!scripts/gate
+!scripts/record_completion_evidence
+!scripts/build-hotspot-configuration-proof-app
+!scripts/run_hotspot_configuration_ui_proof
+!scripts/run_iphone_internet_handoff_proof
+!scripts/build-lifecycle-ui-proof-app
+!scripts/run_lifecycle_ui_proof
+!scripts/run_live_travel_mode_proof
 
 # 4. Block specific directories and files
 .git/

@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      OUTPUT="${2:?--output requires a directory}"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$OUTPUT" ]]; then
+  echo "Usage: $0 --output DIRECTORY" >&2
+  exit 2
+fi
+
+APP="$OUTPUT/Codex Travel Mode Lifecycle Proof.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+EXECUTABLE="lifecycle-ui-proof-app"
+SWIFTPM_CACHE="$ROOT/.swiftpm-home/cache"
+SWIFTPM_CONFIG="$ROOT/.swiftpm-home/config"
+SWIFTPM_SECURITY="$ROOT/.swiftpm-home/security"
+MODULE_CACHE="$ROOT/.swiftpm-home/lifecycle-proof-module-cache"
+
+mkdir -p \
+  "$OUTPUT" \
+  "$SWIFTPM_CACHE" \
+  "$SWIFTPM_CONFIG" \
+  "$SWIFTPM_SECURITY" \
+  "$MODULE_CACHE"
+
+swift build \
+  --disable-sandbox \
+  --manifest-cache local \
+  --cache-path "$SWIFTPM_CACHE" \
+  --config-path "$SWIFTPM_CONFIG" \
+  --security-path "$SWIFTPM_SECURITY" \
+  --package-path "$ROOT"
+
+BIN_DIR="$(
+  swift build \
+    --disable-sandbox \
+    --manifest-cache local \
+    --cache-path "$SWIFTPM_CACHE" \
+    --config-path "$SWIFTPM_CONFIG" \
+    --security-path "$SWIFTPM_SECURITY" \
+    --show-bin-path \
+    --package-path "$ROOT"
+)"
+
+core_objects=("$BIN_DIR/CodexTravelModeCore.build/"*.swift.o)
+lease_objects=("$BIN_DIR/CodexTravelModeSleepLease.build/"*.swift.o)
+xpc_objects=("$BIN_DIR/CodexTravelModeSleepLeaseXPC.build/"*.swift.o)
+if [[ ! -e "${core_objects[0]}" || ! -e "${lease_objects[0]}" || ! -e "${xpc_objects[0]}" ]]; then
+  echo "SwiftPM did not produce the production objects required by the lifecycle proof app." >&2
+  exit 1
+fi
+
+mkdir -p "$MACOS"
+CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
+SWIFT_MODULE_CACHE_PATH="$MODULE_CACHE" \
+xcrun swiftc \
+  -parse-as-library \
+  -g \
+  -Onone \
+  -module-name LifecycleUIProofApp \
+  -target "$(uname -m)-apple-macosx13.0" \
+  -module-cache-path "$MODULE_CACHE" \
+  -I "$BIN_DIR/Modules" \
+  "$ROOT/Sources/CodexTravelModeApp/AppRuntime.swift" \
+  "$ROOT/Sources/CodexTravelModeApp/AppDelegate.swift" \
+  "$ROOT/Sources/CodexTravelModeApp/MenuBarContentView.swift" \
+  "$ROOT/Sources/CodexTravelModeApp/MenuBarDesign.swift" \
+  "$ROOT/Sources/CodexTravelModeApp/StatusBarController.swift" \
+  "$ROOT/Tests/LifecycleUIProofApp/ProofSupport.swift" \
+  "$ROOT/Tests/LifecycleUIProofApp/LifecycleProofMain.swift" \
+  "${core_objects[@]}" \
+  "${lease_objects[@]}" \
+  "${xpc_objects[@]}" \
+  -framework AppKit \
+  -framework Combine \
+  -framework CoreLocation \
+  -framework CoreWLAN \
+  -framework Security \
+  -framework SwiftUI \
+  -framework ServiceManagement \
+  -o "$MACOS/$EXECUTABLE"
+
+/bin/chmod +x "$MACOS/$EXECUTABLE"
+/usr/bin/plutil -create xml1 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleDevelopmentRegion -string en "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleExecutable -string "$EXECUTABLE" "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleIdentifier -string com.codex.travelmode.lifecycle-proof "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleName -string "Codex Travel Mode Lifecycle Proof" "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundlePackageType -string APPL "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string 1 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert LSMinimumSystemVersion -string 13.0 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert LSUIElement -bool YES "$CONTENTS/Info.plist"
+/usr/bin/plutil -lint "$CONTENTS/Info.plist"
+/usr/bin/codesign --force --sign - "$APP"
+/usr/bin/codesign --verify --strict "$APP"
+
+echo "$APP"

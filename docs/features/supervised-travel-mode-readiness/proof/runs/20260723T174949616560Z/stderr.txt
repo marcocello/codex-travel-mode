@@ -1,0 +1,28 @@
+swift-driver version: 1.127.15 warning: /Users/example/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'codex-travel-mode': failed storing manifest for 'codex-travel-mode' in cache: attempt to write a readonly database
+warning: /Users/example/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'codex-travel-mode': failed storing manifest for 'codex-travel-mode' in cache: attempt to write a readonly database
+warning: /Users/example/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'codex-travel-mode': failed storing manifest for 'codex-travel-mode' in cache: attempt to write a readonly database
+warning: /Users/example/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'codex-travel-mode': failed storing manifest for 'codex-travel-mode' in cache: attempt to write a readonly database
+[0/1] Planning build
+Building for debugging...
+[0/24] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.17s)
+warning: /Users/example/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+warning: /Users/example/Library/Caches/org.swift.swiftpm is not accessible or not writable, disabling user-level cache features.
+warning: 'codex-travel-mode': failed storing manifest for 'codex-travel-mode' in cache: attempt to write a readonly database
+Building for debugging...
+[0/24] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.07s)
+NEED_INPUT: run the captured proof from a supervised controlling TTY

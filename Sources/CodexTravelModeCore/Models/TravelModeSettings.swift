@@ -6,7 +6,7 @@ public struct TravelModeSettings: Equatable, Sendable {
     public var wifiDevice: String
 
     public init(
-        hotspotSSID: String = "iPhone",
+        hotspotSSID: String = "",
         hotspotPassword: String = "",
         wifiDevice: String = ""
     ) {
@@ -16,14 +16,20 @@ public struct TravelModeSettings: Equatable, Sendable {
     }
 
     public var trimmedHotspotSSID: String {
-        hotspotSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+        hotspotSSID
     }
 
     public var trimmedHotspotPassword: String {
-        hotspotPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        hotspotPassword
     }
 
     public var trimmedWiFiDevice: String {
         wifiDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.hotspotSSID.hasExactUTF8Representation(as: rhs.hotspotSSID)
+            && lhs.hotspotPassword.hasExactUTF8Representation(as: rhs.hotspotPassword)
+            && lhs.wifiDevice == rhs.wifiDevice
     }
 }

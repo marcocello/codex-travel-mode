@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+
+swift_bin="${SWIFT_EXEC:-$(command -v swift || true)}"
+if [[ -z "$swift_bin" || ! -x "$swift_bin" ]]; then
+    echo "swift is required to run the supervised travel-mode harness" >&2
+    exit 127
+fi
+
+products=(
+    codex-travel-mode-readiness
+    codex-travel-mode-readiness-observer
+    codex-travel-mode-readiness-oracle
+)
+for name in "${products[@]}"; do
+    "$swift_bin" build \
+        --disable-sandbox \
+        --package-path "$repo_root" \
+        --product "$name" >&2
+done
+
+product_dir="$(
+    "$swift_bin" build \
+        --disable-sandbox \
+        --package-path "$repo_root" \
+        --show-bin-path
+)"
+product="$product_dir/codex-travel-mode-readiness"
+for name in "${products[@]}"; do
+    if [[ ! -x "$product_dir/$name" ]]; then
+        echo "$name executable was not produced" >&2
+        exit 1
+    fi
+done
+
+exec "$product" "$@"

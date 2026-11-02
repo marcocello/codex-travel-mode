@@ -1,0 +1,106 @@
+Runtime: Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)
+Mode: supervised-live; deterministic harness precedes guarded physical acceptance
+[0/1] Planning build
+Building for debugging...
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'codex-travel-mode-readiness' complete! (0.16s)
+Building for debugging...
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'codex-travel-mode-readiness-observer' complete! (0.08s)
+Building for debugging...
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'codex-travel-mode-readiness-oracle' complete! (0.07s)
+Test Suite 'Selected tests' started at 2026-07-23 19:49:51.725.
+Test Suite 'codex-travel-modePackageTests.xctest' started at 2026-07-23 19:49:51.730.
+Test Suite 'LiveTravelModeProofHarnessTests' started at 2026-07-23 19:49:51.730.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testArmingReceiptRejectsTamperExpiryAndConcurrentReplay]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testArmingReceiptRejectsTamperExpiryAndConcurrentReplay]' passed (0.004 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testDynamicHelperIdentityRequiresExactFieldsAndReciprocalRequirements]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testDynamicHelperIdentityRequiresExactFieldsAndReciprocalRequirements]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceFinalizerSealsExactRoleAuthoredManifestAndReadback]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceFinalizerSealsExactRoleAuthoredManifestAndReadback]' passed (0.008 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceObserverRedactsSensitiveInputsBeforeEncoding]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceObserverRedactsSensitiveInputsBeforeEncoding]' passed (0.001 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceRecordersEnforceControllerRoleOwnership]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testEvidenceRecordersEnforceControllerRoleOwnership]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testHelperJournalUsesExactNoninteractiveAuthorizationAndPresenceQuery]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testHelperJournalUsesExactNoninteractiveAuthorizationAndPresenceQuery]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleAcceptsCompleteSealedFixtureAndWritesReport]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleAcceptsCompleteSealedFixtureAndWritesReport]' passed (0.029 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleDetectsMutationAcrossEvaluation]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleDetectsMutationAcrossEvaluation]' passed (0.028 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleKeepsPriorSSIDSeparateFromMandatoryCleanup]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleKeepsPriorSSIDSeparateFromMandatoryCleanup]' passed (0.028 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleRejectsReceiptTargetAndDeviceDrift]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleRejectsReceiptTargetAndDeviceDrift]' passed (0.045 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleRejectsSensitiveSentinelInsideSealedEvidence]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testIndependentOracleRejectsSensitiveSentinelInsideSealedEvidence]' passed (0.015 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testLiveFailureCleanupIsBoundedProductionOnlyAndStopsWithoutRescue]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testLiveFailureCleanupIsBoundedProductionOnlyAndStopsWithoutRescue]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObservedSystemParsersRejectAmbiguityAndPreserveExactValues]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObservedSystemParsersRejectAmbiguityAndPreserveExactValues]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObservedSystemProbeComposesOnlyFixedReadOnlyQueries]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObservedSystemProbeComposesOnlyFixedReadOnlyQueries]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessKeepsOneSequenceAcrossPreflightAndTypedLiveRequests]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessKeepsOneSequenceAcrossPreflightAndTypedLiveRequests]' passed (0.039 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsLiveRequestSequenceReset]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsLiveRequestSequenceReset]' passed (0.036 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsTamperedLiveReceiptBeforeConsumption]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsTamperedLiveReceiptBeforeConsumption]' passed (0.035 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsThirdConcurrentAttach]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverSubprocessRejectsThirdConcurrentAttach]' passed (0.034 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverUsesExactBytesDomainsChainAndEphemeralRestartKey]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testObserverUsesExactBytesDomainsChainAndEphemeralRestartKey]' passed (0.002 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPlatformIdentityRegistrationAndProcessChecksUseExactBinaries]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPlatformIdentityRegistrationAndProcessChecksUseExactBinaries]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPlatformJournalAXAndProductionUIReadbackStayReadOnly]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPlatformJournalAXAndProductionUIReadbackStayReadOnly]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPreflightAndLiveUseOneBoundExecutableDigestConvention]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testPreflightAndLiveUseOneBoundExecutableDigestConvention]' passed (0.001 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderAcceptanceBindsSignedReceiptsToMetricsAndAdjacentSnapshots]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderAcceptanceBindsSignedReceiptsToMetricsAndAdjacentSnapshots]' passed (0.002 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderClientUsesStrictCapabilityBearerAndExactReadbackQuery]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderClientUsesStrictCapabilityBearerAndExactReadbackQuery]' passed (0.003 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderConfigReceiptCanonicalBytesSignatureAndSequence]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testProviderConfigReceiptCanonicalBytesSignatureAndSequence]' passed (0.001 seconds).
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testSealingEnforcesModesAndDetectsPostSealTamper]' started.
+Test Case '-[CodexTravelModeCoreTests.LiveTravelModeProofHarnessTests testSealingEnforcesModesAndDetectsPostSealTamper]' passed (0.002 seconds).
+Test Suite 'LiveTravelModeProofHarnessTests' passed at 2026-07-23 19:49:52.046.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.315 (0.316) seconds
+Test Suite 'codex-travel-modePackageTests.xctest' passed at 2026-07-23 19:49:52.046.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.315 (0.316) seconds
+Test Suite 'Selected tests' passed at 2026-07-23 19:49:52.046.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.315 (0.321) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1501
+􀄵  Target Platform: arm64e-apple-macos14.0
+􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.
+Test Suite 'Selected tests' started at 2026-07-23 19:49:52.577.
+Test Suite 'codex-travel-modePackageTests.xctest' started at 2026-07-23 19:49:52.582.
+Test Suite 'ReadinessCoreHardeningTests' started at 2026-07-23 19:49:52.582.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testAccessibilityUIReaderAndValidatorRejectUnavailableOrFalseState]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testAccessibilityUIReaderAndValidatorRejectUnavailableOrFalseState]' passed (0.001 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testAccessibilityUIReaderUsesExactPIDAndSemanticStatusValues]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testAccessibilityUIReaderUsesExactPIDAndSemanticStatusValues]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testFixedPlatformParsersRejectAmbiguityAndNoncanonicalValues]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testFixedPlatformParsersRejectAmbiguityAndNoncanonicalValues]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testHelperRegistrationUsesExactSystemLaunchctlReadback]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testHelperRegistrationUsesExactSystemLaunchctlReadback]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testPortableIdentityAndCodexQueriesAreFixedAndReadOnly]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testPortableIdentityAndCodexQueriesAreFixedAndReadOnly]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testProductionSigningRejectsWrongIdentifierTeamAndRequirement]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testProductionSigningRejectsWrongIdentifierTeamAndRequirement]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testProductionSigningRequiresExactReciprocalAppAndHelperRequirements]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testProductionSigningRequiresExactReciprocalAppAndHelperRequirements]' passed (0.000 seconds).
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testSudoAuthorizationRequiresExactNoPasswordGrantAndSilentDiagnostics]' started.
+Test Case '-[CodexTravelModeCoreTests.ReadinessCoreHardeningTests testSudoAuthorizationRequiresExactNoPasswordGrantAndSilentDiagnostics]' passed (0.000 seconds).
+Test Suite 'ReadinessCoreHardeningTests' passed at 2026-07-23 19:49:52.585.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'codex-travel-modePackageTests.xctest' passed at 2026-07-23 19:49:52.585.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'Selected tests' passed at 2026-07-23 19:49:52.585.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.002 (0.007) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1501
+􀄵  Target Platform: arm64e-apple-macos14.0
+􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -1,0 +1,20 @@
+{
+  "capture_pid": 64767,
+  "command": [
+    "docs/features/supervised-travel-mode-readiness/proof/run.sh"
+  ],
+  "cwd": "<repository-root>",
+  "runner_pgid": 64769,
+  "runner_pid": 64769,
+  "runtime": {
+    "capture_python": "3.13.3",
+    "capture_python_executable": "python3",
+    "machine": "arm64",
+    "platform": "Darwin",
+    "platform_release": "25.5.0",
+    "shell": "/opt/homebrew/bin/zsh"
+  },
+  "started_at": "2026-07-23T17:49:49.616793+00:00",
+  "status": "STARTED",
+  "timeout_seconds": 1800.0
+}

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      OUTPUT="${2:?--output requires a directory}"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$OUTPUT" ]]; then
+  echo "Usage: $0 --output DIRECTORY" >&2
+  exit 2
+fi
+
+APP="$OUTPUT/Codex Travel Mode Proof.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
+EXECUTABLE="hotspot-configuration-proof-app"
+WORKER_EXECUTABLE="hotspot-configuration-proof-worker"
+SWIFTPM_CACHE="$ROOT/.swiftpm-home/cache"
+SWIFTPM_CONFIG="$ROOT/.swiftpm-home/config"
+SWIFTPM_SECURITY="$ROOT/.swiftpm-home/security"
+MODULE_CACHE="$ROOT/.swiftpm-home/hotspot-proof-module-cache"
+
+mkdir -p \
+  "$OUTPUT" \
+  "$SWIFTPM_CACHE" \
+  "$SWIFTPM_CONFIG" \
+  "$SWIFTPM_SECURITY" \
+  "$MODULE_CACHE"
+
+swift build \
+  --target CodexTravelModeCore \
+  --disable-sandbox \
+  --manifest-cache local \
+  --cache-path "$SWIFTPM_CACHE" \
+  --config-path "$SWIFTPM_CONFIG" \
+  --security-path "$SWIFTPM_SECURITY" \
+  --package-path "$ROOT"
+swift build \
+  --product "$WORKER_EXECUTABLE" \
+  --disable-sandbox \
+  --manifest-cache local \
+  --cache-path "$SWIFTPM_CACHE" \
+  --config-path "$SWIFTPM_CONFIG" \
+  --security-path "$SWIFTPM_SECURITY" \
+  --package-path "$ROOT"
+
+BIN_DIR="$(
+  swift build \
+    --disable-sandbox \
+    --manifest-cache local \
+    --cache-path "$SWIFTPM_CACHE" \
+    --config-path "$SWIFTPM_CONFIG" \
+    --security-path "$SWIFTPM_SECURITY" \
+    --show-bin-path \
+    --package-path "$ROOT"
+)"
+
+core_objects=("$BIN_DIR/CodexTravelModeCore.build/"*.swift.o)
+lease_objects=("$BIN_DIR/CodexTravelModeSleepLease.build/"*.swift.o)
+if [[ ! -e "${core_objects[0]}" || ! -e "${lease_objects[0]}" ]]; then
+  echo "SwiftPM did not produce the production module objects required by the proof app." >&2
+  exit 1
+fi
+
+mkdir -p "$MACOS" "$RESOURCES"
+CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
+SWIFT_MODULE_CACHE_PATH="$MODULE_CACHE" \
+xcrun swiftc \
+  -parse-as-library \
+  -g \
+  -Onone \
+  -module-name HotspotConfigurationProofApp \
+  -target "$(uname -m)-apple-macosx13.0" \
+  -module-cache-path "$MODULE_CACHE" \
+  -I "$BIN_DIR/Modules" \
+  "$ROOT/Sources/CodexTravelModeApp/MenuBarContentView.swift" \
+  "$ROOT/Tests/HotspotConfigurationProofApp/main.swift" \
+  "${core_objects[@]}" \
+  "${lease_objects[@]}" \
+  -framework AppKit \
+  -framework Combine \
+  -framework CoreLocation \
+  -framework CoreWLAN \
+  -framework Security \
+  -framework SwiftUI \
+  -o "$MACOS/$EXECUTABLE"
+
+/bin/chmod +x "$MACOS/$EXECUTABLE"
+/bin/cp "$BIN_DIR/$WORKER_EXECUTABLE" "$RESOURCES/$WORKER_EXECUTABLE"
+/bin/chmod +x "$RESOURCES/$WORKER_EXECUTABLE"
+
+/usr/bin/plutil -create xml1 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleDevelopmentRegion -string en "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleExecutable -string "$EXECUTABLE" "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleIdentifier -string com.codex.travelmode.hotspot-proof "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleName -string "Codex Travel Mode Proof" "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundlePackageType -string APPL "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string 1 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert LSMinimumSystemVersion -string 13.0 "$CONTENTS/Info.plist"
+/usr/bin/plutil -insert LSUIElement -bool YES "$CONTENTS/Info.plist"
+/usr/bin/plutil -lint "$CONTENTS/Info.plist"
+/usr/bin/codesign --force --sign - "$APP"
+/usr/bin/codesign --verify --strict "$APP"
+
+echo "$APP"

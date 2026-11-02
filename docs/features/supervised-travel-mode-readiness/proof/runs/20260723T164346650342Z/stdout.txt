@@ -1,0 +1,14 @@
+Runtime: Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)
+Mode: supervised-live; deterministic harness precedes guarded physical acceptance
+[0/1] Planning build
+Building for debugging...
+[0/4] Write swift-version--58304C5D6DBC2206.txt
+[2/6] Emitting module CodexTravelModeReadinessCLI
+[3/6] Compiling CodexTravelModeReadinessCLI ReadinessMain.swift
+/Users/example/software/marcocello/codex-travel-mode/Sources/CodexTravelModeReadinessCLI/ReadinessMain.swift:7:30: error: cannot find 'ReadinessCLI' in scope
+ 5 | enum ReadinessMain {
+ 6 |     static func main() async {
+ 7 |         let exitCode = await ReadinessCLI.run(arguments: Array(CommandLine.arguments.dropFirst()))
+   |                              `- error: cannot find 'ReadinessCLI' in scope
+ 8 |         Foundation.exit(exitCode)
+ 9 |     }

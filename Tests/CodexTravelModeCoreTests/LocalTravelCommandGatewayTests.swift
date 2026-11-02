@@ -30,7 +30,7 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
         XCTAssertNil(parseIPv4Address("ipconfig_server_port failed\n"))
     }
 
-    func testCurrentWiFiStatusUsesDefaultRouteWhenSSIDIsUnavailable() async {
+    func testCurrentWiFiStatusNeverSynthesizesSSIDFromRouteAndAddress() async {
         let runner = OrderedOutputRunner(
             outputs: [
                 ShellCommandOutput(
@@ -54,13 +54,39 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
 
         let status = await gateway.currentWiFiStatus(device: "en0")
 
-        XCTAssertEqual(status.networkName, "Connected on en0")
+        XCTAssertNil(status.networkName)
         XCTAssertFalse(status.commandFailed)
         XCTAssertEqual(runner.commands.map(\.arguments), [
-            ["-getairportnetwork", "en0"],
-            ["-n", "get", "default"],
-            ["getifaddr", "en0"]
+            ["-getairportnetwork", "en0"]
         ])
+    }
+
+    func testSessionBaselineDoesNotPersistRouteOnlyConnectionLabelAsSSID() async throws {
+        let runner = OrderedOutputRunner(
+            outputs: [
+                ShellCommandOutput(
+                    exitCode: 0,
+                    standardOutput: "You are not associated with an AirPort network.\n",
+                    standardError: ""
+                ),
+                ShellCommandOutput(
+                    exitCode: 0,
+                    standardOutput: "interface: en0\n",
+                    standardError: ""
+                ),
+                ShellCommandOutput(
+                    exitCode: 0,
+                    standardOutput: "10.0.0.124\n",
+                    standardError: ""
+                )
+            ]
+        )
+        let gateway = LocalTravelCommandGateway(runner: runner)
+        let controller = GatewayTravelSessionSystemController(gateway: gateway)
+
+        let baselineSSID = try await controller.currentAssociatedSSID(device: "en0")
+
+        XCTAssertNil(baselineSSID)
     }
 
     func testParseWiFiDeviceFromHardwarePorts() {
@@ -85,76 +111,10 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
         XCTAssertEqual(parsePreferredNetworks(output), ["Office", "iPhone"])
     }
 
-    func testParseScannedNetworksExtractsSSIDBeforeBSSID() {
-        let output = """
-                            SSID BSSID             RSSI CHANNEL HT CC SECURITY
-                          Office 00:11:22:33:44:55 -48  11      Y  US WPA2
-                          iPhone aa:bb:cc:dd:ee:ff -50  6       Y  US WPA2
-        """
-
-        XCTAssertEqual(parseScannedNetworks(output), ["Office", "iPhone"])
-    }
-
     func testParseWiFiPower() {
         XCTAssertEqual(parseWiFiPower("Wi-Fi Power (en0): On\n"), true)
         XCTAssertEqual(parseWiFiPower("Wi-Fi Power (en0): Off\n"), false)
         XCTAssertNil(parseWiFiPower("AuthorizationCreate() failed: -60008\n"))
-    }
-
-    func testParseDisablesleep() {
-        let output = """
-        Battery Power:
-         disablesleep        0
-        AC Power:
-         disablesleep        1
-        """
-
-        XCTAssertEqual(parseDisablesleep(output), false)
-    }
-
-    func testParsePowerSettingsSnapshot() {
-        let output = """
-        Battery Power:
-         sleep                1
-         ttyskeepawake        1
-        AC Power:
-         sleep                0
-         ttyskeepawake        1
-        """
-
-        XCTAssertEqual(
-            parsePowerSettingsSnapshot(output),
-            PowerSettingsSnapshot(
-                battery: PowerProfileSettings(sleep: 1, ttysKeepAwake: 1),
-                ac: PowerProfileSettings(sleep: 0, ttysKeepAwake: 1)
-            )
-        )
-    }
-
-    func testPmsetRestoreCommandsIncludeSleepAndTtysKeepAwake() {
-        let snapshot = PowerSettingsSnapshot(
-            battery: PowerProfileSettings(sleep: 1, ttysKeepAwake: 0),
-            ac: PowerProfileSettings(sleep: 30, ttysKeepAwake: 0)
-        )
-
-        XCTAssertEqual(
-            pmsetRestoreCommands(snapshot),
-            [
-                "pmset -b sleep 1 ttyskeepawake 0",
-                "pmset -c sleep 30 ttyskeepawake 0"
-            ]
-        )
-    }
-
-    func testParseSleepDisabledFromLivePmsetOutput() {
-        let output = """
-        System-wide power settings:
-         SleepDisabled        1
-        Currently in use:
-         sleep                1
-        """
-
-        XCTAssertEqual(parseDisablesleep(output), true)
     }
 
     func testParseClamshellClosed() {
@@ -179,7 +139,7 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
         )
     }
 
-    func testJoinWiFiUsesPasswordWithAssociationManagerWhenProvided() async {
+    func testJoinWiFiDoesNotRepeatSuccessfulNetworksetupAssociation() async {
         let runner = RecordingRunner()
         let associationManager = RecordingAssociationManager(associateResult: CommandResult(exitCode: 0))
         let gateway = LocalTravelCommandGateway(
@@ -190,13 +150,10 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
         let result = await gateway.joinWiFi(device: "en0", ssid: "iPhone", password: "secret")
 
         XCTAssertTrue(result.succeeded)
-        XCTAssertEqual(
-            associationManager.associateAttempts,
-            [AssociationAttempt(device: "en0", ssid: "iPhone", password: "secret")]
-        )
+        XCTAssertTrue(associationManager.associateAttempts.isEmpty)
     }
 
-    func testSetWiFiPowerUsesAssociationManagerBeforeNetworksetup() async {
+    func testSetWiFiPowerReturnsSuccessfulAssociationManagerResult() async {
         let runner = RecordingRunner()
         let associationManager = RecordingAssociationManager()
         let gateway = LocalTravelCommandGateway(
@@ -204,96 +161,165 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
             associationManager: associationManager
         )
 
-        await gateway.setWiFiPower(device: "en0", enabled: true)
+        let result = await gateway.setWiFiPower(device: "en0", enabled: true)
 
+        XCTAssertTrue(result.succeeded)
         XCTAssertEqual(associationManager.powerAttempts, [PowerAttempt(device: "en0", enabled: true)])
-        XCTAssertEqual(runner.commands.last?.arguments, ["-setairportpower", "en0", "on"])
+        XCTAssertNil(runner.commands.last)
     }
 
-    func testRestorePowerSettingsUsesAdministratorPmsetScript() async throws {
-        let runner = RecordingRunner()
+    func testBoundedPowerMutationUsesProcessDeadlineAndClassifiesTimeout() async {
+        let runner = TimeoutRecordingRunner(
+            output: ShellCommandOutput(
+                exitCode: 124,
+                standardOutput: "",
+                standardError: "Command timed out and was terminated."
+            )
+        )
         let gateway = LocalTravelCommandGateway(runner: runner)
-        let snapshot = PowerSettingsSnapshot(
-            battery: PowerProfileSettings(sleep: 1, ttysKeepAwake: 0),
-            ac: PowerProfileSettings(sleep: 30, ttysKeepAwake: 0)
+
+        let result = await gateway.setWiFiPower(
+            device: "en0",
+            enabled: true,
+            timeout: .milliseconds(250)
         )
 
-        try await gateway.restorePowerSettings(snapshot)
-
-        let script = try XCTUnwrap(runner.commands.last?.arguments.last)
-        XCTAssertEqual(runner.commands.last?.path, "/usr/bin/osascript")
-        XCTAssertTrue(script.contains("pmset -b sleep 1 ttyskeepawake 0"))
-        XCTAssertTrue(script.contains("pmset -c sleep 30 ttyskeepawake 0"))
-        XCTAssertTrue(script.contains("with administrator privileges"))
+        XCTAssertEqual(result.failureCategory, .timedOut)
+        XCTAssertEqual(runner.commands.map(\.arguments), [
+            ["-setairportpower", "en0", "on"]
+        ])
+        XCTAssertEqual(runner.timeouts, [.milliseconds(250)])
     }
 
-    func testCodexRunningUsesExactProcessName() async {
-        let runner = RecordingRunner(output: ShellCommandOutput(exitCode: 0, standardOutput: "123\n", standardError: ""))
-        let gateway = LocalTravelCommandGateway(runner: runner)
-
-        let isRunning = await gateway.isCodexRunning()
-
-        XCTAssertEqual(isRunning, true)
-        XCTAssertEqual(runner.commands.last?.arguments, ["-x", "Codex"])
-    }
-
-    func testCodexNotRunningWhenExactProcessIsMissing() async {
-        let runner = RecordingRunner(output: ShellCommandOutput(exitCode: 1, standardOutput: "", standardError: ""))
-        let gateway = LocalTravelCommandGateway(runner: runner)
-
-        let isRunning = await gateway.isCodexRunning()
-
-        XCTAssertEqual(isRunning, false)
-    }
-
-    func testLidClosedOverrideAdminPromptExplainsWhyPermissionIsNeeded() async throws {
+    func testCodexRunningUsesExactLiveBundleIdentityWithoutShellCommands() async {
         let runner = RecordingRunner()
-        let gateway = LocalTravelCommandGateway(runner: runner)
+        let applications = StubRunningApplicationProvider(applications: [
+            RunningApplicationIdentity(
+                bundleIdentifier: "com.openai.codex",
+                isTerminated: false
+            )
+        ])
+        let gateway = LocalTravelCommandGateway(
+            runner: runner,
+            runningApplicationProvider: applications
+        )
 
-        try await gateway.setLidClosedSleepOverride(enabled: true)
+        let isRunning = await gateway.isCodexRunning()
 
-        let script = try XCTUnwrap(runner.commands.last?.arguments.last)
-        XCTAssertTrue(script.contains("with administrator privileges"))
-        XCTAssertTrue(script.contains("Codex Travel Mode needs an administrator password"))
+        XCTAssertTrue(isRunning)
+        XCTAssertTrue(runner.commands.isEmpty)
     }
 
-    func testSettingsLoadDoesNotReadKeychainPassword() {
+    func testCodexNotRunningForTerminatedOrDifferentBundleIdentity() async {
+        let applications = StubRunningApplicationProvider(applications: [
+            RunningApplicationIdentity(
+                bundleIdentifier: "com.openai.codex",
+                isTerminated: true
+            ),
+            RunningApplicationIdentity(
+                bundleIdentifier: "com.openai.chatgpt",
+                isTerminated: false
+            ),
+            RunningApplicationIdentity(bundleIdentifier: nil, isTerminated: false)
+        ])
+        let gateway = LocalTravelCommandGateway(runningApplicationProvider: applications)
+
+        let isRunning = await gateway.isCodexRunning()
+
+        XCTAssertFalse(isRunning)
+    }
+
+    func testLiveCodexWorkspaceDetectionWhenRequired() async throws {
+        guard ProcessInfo.processInfo.environment["REQUIRE_LIVE_CODEX_RUNNING"] == "1" else {
+            throw XCTSkip("Live Codex workspace detection is exercised by the lifecycle proof.")
+        }
+
+        let gateway = LocalTravelCommandGateway()
+        let isRunning = await gateway.isCodexRunning()
+
+        XCTAssertTrue(
+            isRunning,
+            "Expected the running com.openai.codex desktop bundle to satisfy readiness."
+        )
+    }
+
+    func testSettingsLoadDoesNotReadKeychainPassword() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("settings-load-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let defaults = UserDefaults(suiteName: "CodexTravelModeTests.\(UUID().uuidString)")!
         defaults.set("iPhone", forKey: "fallbackHotspotSSID")
         defaults.set("en0", forKey: "wifiDevice")
-        let keychain = SpyKeychainPasswordStore(password: "secret")
-        let store = UserDefaultsTravelSettingsStore(defaults: defaults, keychain: keychain)
+        let keychain = SpyKeychainPasswordStore(
+            passwords: ["fallbackHotspotPassword": "secret"]
+        )
+        let store = FileTravelSettingsStore(
+            rootURL: root,
+            defaults: defaults,
+            keychain: keychain
+        )
+        let readsAfterMigration = keychain.readAccounts
 
         let settings = store.load()
 
         XCTAssertEqual(settings.hotspotSSID, "iPhone")
         XCTAssertEqual(settings.hotspotPassword, "")
         XCTAssertEqual(settings.wifiDevice, "en0")
-        XCTAssertEqual(keychain.readAccounts, [])
+        XCTAssertFalse(readsAfterMigration.isEmpty)
+        XCTAssertEqual(keychain.readAccounts, readsAfterMigration)
+        XCTAssertNotNil(try store.activeHotspotConfiguration())
     }
 
     func testSettingsSaveWithBlankPasswordPreservesSavedKeychainPassword() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("settings-blank-save-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let defaults = UserDefaults(suiteName: "CodexTravelModeTests.\(UUID().uuidString)")!
-        let keychain = SpyKeychainPasswordStore(password: "secret")
-        let store = UserDefaultsTravelSettingsStore(defaults: defaults, keychain: keychain)
+        let keychain = SpyKeychainPasswordStore()
+        let store = FileTravelSettingsStore(
+            rootURL: root,
+            defaults: defaults,
+            keychain: keychain
+        )
+
+        try store.save(
+            TravelModeSettings(
+                hotspotSSID: "iPhone",
+                hotspotPassword: "secret",
+                wifiDevice: "en0"
+            )
+        )
+        let seeded = try XCTUnwrap(store.activeHotspotConfiguration())
+        let stagedCredentialCount = keychain.savedPasswords.count
 
         try store.save(
             TravelModeSettings(
                 hotspotSSID: "iPhone",
                 hotspotPassword: "",
-                wifiDevice: "en0"
+                wifiDevice: "en1"
             )
         )
 
-        XCTAssertEqual(defaults.string(forKey: "fallbackHotspotSSID"), "iPhone")
-        XCTAssertEqual(defaults.string(forKey: "wifiDevice"), "en0")
-        XCTAssertTrue(keychain.savedPasswords.isEmpty)
+        let committed = try XCTUnwrap(store.activeHotspotConfiguration())
+        XCTAssertEqual(committed.ssid, "iPhone")
+        XCTAssertEqual(committed.wifiDevice, "en1")
+        XCTAssertEqual(committed.credentialReference, seeded.credentialReference)
+        XCTAssertEqual(keychain.savedPasswords.count, stagedCredentialCount)
+        XCTAssertTrue(try keychain.passwordExists(account: committed.credentialReference))
+        XCTAssertEqual(try store.loadHotspotPassword(), "secret")
     }
 
     func testSettingsSaveTracksWhetherPasswordWasSaved() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("settings-save-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let defaults = UserDefaults(suiteName: "CodexTravelModeTests.\(UUID().uuidString)")!
-        let keychain = SpyKeychainPasswordStore(password: "secret")
-        let store = UserDefaultsTravelSettingsStore(defaults: defaults, keychain: keychain)
+        let keychain = SpyKeychainPasswordStore()
+        let store = FileTravelSettingsStore(
+            rootURL: root,
+            defaults: defaults,
+            keychain: keychain
+        )
 
         XCTAssertEqual(store.hasSavedHotspotPassword(), false)
 
@@ -305,45 +331,54 @@ final class LocalTravelCommandGatewayTests: XCTestCase {
             )
         )
 
+        let active = try XCTUnwrap(store.activeHotspotConfiguration())
+        XCTAssertEqual(active.ssid, "iPhone")
+        XCTAssertEqual(active.wifiDevice, "en0")
+        XCTAssertTrue(try keychain.passwordExists(account: active.credentialReference))
+        XCTAssertEqual(try store.loadHotspotPassword(), "secret")
         XCTAssertEqual(store.hasSavedHotspotPassword(), true)
     }
 
-    func testSettingsStorePersistsRestoreSnapshotUntilCleared() {
-        let defaults = UserDefaults(suiteName: "CodexTravelModeTests.\(UUID().uuidString)")!
-        let keychain = SpyKeychainPasswordStore(password: "secret")
-        let store = UserDefaultsTravelSettingsStore(defaults: defaults, keychain: keychain)
-        let snapshot = TravelRestoreSnapshot(
-            lidClosedSleepOverrideEnabled: false,
-            wifiDevice: "en0",
-            wifiPowerEnabled: true
-        )
-
-        store.saveRestoreSnapshot(snapshot)
-
-        XCTAssertEqual(store.loadRestoreSnapshot(), snapshot)
-
-        store.clearRestoreSnapshot()
-
-        XCTAssertNil(store.loadRestoreSnapshot())
-    }
 }
 
 private final class SpyKeychainPasswordStore: KeychainPasswordStoring, @unchecked Sendable {
-    private let password: String
+    private var passwords: [String: String]
     var readAccounts: [String] = []
     var savedPasswords: [(password: String, account: String)] = []
+    var deletedAccounts: [String] = []
 
-    init(password: String) {
-        self.password = password
+    init(passwords: [String: String] = [:]) {
+        self.passwords = passwords
     }
 
     func readPassword(account: String) throws -> String {
         readAccounts.append(account)
+        guard let password = passwords[account] else {
+            throw KeychainError.notFound
+        }
         return password
     }
 
     func savePassword(_ password: String, account: String) throws {
+        passwords[account] = password
         savedPasswords.append((password: password, account: account))
+    }
+
+    func passwordExists(account: String) throws -> Bool {
+        passwords[account] != nil
+    }
+
+    func deletePassword(account: String) throws {
+        passwords.removeValue(forKey: account)
+        deletedAccounts.append(account)
+    }
+}
+
+private struct StubRunningApplicationProvider: RunningApplicationProviding {
+    var applications: [RunningApplicationIdentity]
+
+    func runningApplications() async -> [RunningApplicationIdentity] {
+        applications
     }
 }
 
@@ -384,6 +419,31 @@ private final class OrderedOutputRunner: ShellCommandRunning, @unchecked Sendabl
             )
         }
         return outputs.removeFirst()
+    }
+}
+
+private final class TimeoutRecordingRunner: ShellCommandRunning, @unchecked Sendable {
+    private let output: ShellCommandOutput
+    var commands: [RecordingRunner.Command] = []
+    var timeouts: [Duration] = []
+
+    init(output: ShellCommandOutput) {
+        self.output = output
+    }
+
+    func run(_ executableURL: URL, arguments: [String]) async -> ShellCommandOutput {
+        commands.append(RecordingRunner.Command(path: executableURL.path, arguments: arguments))
+        return output
+    }
+
+    func run(
+        _ executableURL: URL,
+        arguments: [String],
+        timeout: Duration
+    ) async -> ShellCommandOutput {
+        commands.append(RecordingRunner.Command(path: executableURL.path, arguments: arguments))
+        timeouts.append(timeout)
+        return output
     }
 }
 

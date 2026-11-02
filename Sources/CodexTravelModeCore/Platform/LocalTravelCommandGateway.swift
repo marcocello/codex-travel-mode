@@ -1,29 +1,58 @@
+import AppKit
 import CoreWLAN
 import Foundation
 
-public final class LocalTravelCommandGateway: TravelCommandGateway, @unchecked Sendable {
+public struct RunningApplicationIdentity: Equatable, Sendable {
+    public var bundleIdentifier: String?
+    public var isTerminated: Bool
+
+    public init(bundleIdentifier: String?, isTerminated: Bool) {
+        self.bundleIdentifier = bundleIdentifier
+        self.isTerminated = isTerminated
+    }
+}
+
+public protocol RunningApplicationProviding: Sendable {
+    func runningApplications() async -> [RunningApplicationIdentity]
+}
+
+public struct WorkspaceRunningApplicationProvider: RunningApplicationProviding {
+    public init() {}
+
+    public func runningApplications() async -> [RunningApplicationIdentity] {
+        await MainActor.run {
+            NSWorkspace.shared.runningApplications.map { application in
+                RunningApplicationIdentity(
+                    bundleIdentifier: application.bundleIdentifier,
+                    isTerminated: application.isTerminated
+                )
+            }
+        }
+    }
+}
+
+public final class LocalTravelCommandGateway: TravelCommandGateway, LidStateProviding,
+    WiFiConnectivityProviding, @unchecked Sendable
+{
     private let runner: ShellCommandRunning
     private let associationManager: WiFiAssociationManaging?
+    private let runningApplicationProvider: RunningApplicationProviding
     private let networksetupURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-    private let osascriptURL = URL(fileURLWithPath: "/usr/bin/osascript")
     private let caffeinateURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-    private let pmsetURL = URL(fileURLWithPath: "/usr/bin/pmset")
     private let routeURL = URL(fileURLWithPath: "/sbin/route")
-    private let ipconfigURL = URL(fileURLWithPath: "/usr/sbin/ipconfig")
+    private let ifconfigURL = URL(fileURLWithPath: "/sbin/ifconfig")
     private let openURL = URL(fileURLWithPath: "/usr/bin/open")
     private let ioregURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    private let pgrepURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-    private let airportURL = URL(
-        fileURLWithPath: "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-    )
     private let keepAwakeStore = KeepAwakeProcessStore()
 
     public init(
         runner: ShellCommandRunning = ProcessShellCommandRunner(),
-        associationManager: WiFiAssociationManaging? = nil
+        associationManager: WiFiAssociationManaging? = nil,
+        runningApplicationProvider: RunningApplicationProviding = WorkspaceRunningApplicationProvider()
     ) {
         self.runner = runner
         self.associationManager = associationManager
+        self.runningApplicationProvider = runningApplicationProvider
     }
 
     public func startKeepAwake() async throws {
@@ -32,48 +61,6 @@ public final class LocalTravelCommandGateway: TravelCommandGateway, @unchecked S
 
     public func stopKeepAwake() async {
         await keepAwakeStore.stop()
-    }
-
-    public func currentLidClosedSleepOverride() async -> Bool? {
-        let output = await runner.run(pmsetURL, arguments: ["-g"])
-        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
-        return parseDisablesleep(raw)
-    }
-
-    public func setLidClosedSleepOverride(enabled: Bool) async throws {
-        let value = enabled ? "1" : "0"
-        let reason = enabled
-            ? "Codex Travel Mode needs an administrator password to keep the Mac awake with the lid closed."
-            : "Codex Travel Mode needs an administrator password to restore normal lid-closed sleep."
-        let script = """
-        do shell script "pmset -a disablesleep \(value)" with administrator privileges with prompt "\(reason)"
-        """
-        let output = await runner.run(osascriptURL, arguments: ["-e", script])
-        if output.exitCode != 0 {
-            throw TravelCommandError.commandFailed(output.standardError)
-        }
-    }
-
-    public func currentPowerSettings() async -> PowerSettingsSnapshot? {
-        let output = await runner.run(pmsetURL, arguments: ["-g", "custom"])
-        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
-        return parsePowerSettingsSnapshot(raw)
-    }
-
-    public func restorePowerSettings(_ snapshot: PowerSettingsSnapshot) async throws {
-        let commands = pmsetRestoreCommands(snapshot)
-        guard !commands.isEmpty else {
-            return
-        }
-        let joinedCommands = commands.joined(separator: "; ")
-        let reason = "Codex Travel Mode needs an administrator password to restore previous sleep settings."
-        let script = """
-        do shell script "\(joinedCommands)" with administrator privileges with prompt "\(reason)"
-        """
-        let output = await runner.run(osascriptURL, arguments: ["-e", script])
-        if output.exitCode != 0 {
-            throw TravelCommandError.commandFailed(output.standardError)
-        }
     }
 
     public func currentLidClosed() async -> Bool? {
@@ -88,34 +75,102 @@ public final class LocalTravelCommandGateway: TravelCommandGateway, @unchecked S
         return parseWiFiDevice(raw)
     }
 
-    public func knownWiFiNetworks(device: String) async -> [String] {
-        let output = await runner.run(networksetupURL, arguments: ["-listpreferredwirelessnetworks", device])
-        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
-        return parsePreferredNetworks(raw)
-    }
-
-    public func scanWiFiNetworks(device: String) async -> [String] {
-        let output = await runner.run(airportURL, arguments: ["-s"])
-        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
-        return parseScannedNetworks(raw)
-    }
-
     public func currentWiFiStatus(device: String) async -> WiFiStatus {
         let output = await runner.run(networksetupURL, arguments: ["-getairportnetwork", device])
         let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
         if let networkName = parseNetworkName(raw) {
-            return WiFiStatus(device: device, networkName: networkName, rawOutput: raw)
-        }
-
-        if await deviceHasDefaultRouteAndAddress(device) {
             return WiFiStatus(
                 device: device,
-                networkName: "Connected on \(device)",
-                rawOutput: "\(device) has an IP address and owns the default route."
+                networkName: networkName,
+                rawOutput: raw,
+                providerExitCode: output.exitCode
             )
         }
+        return WiFiStatus(
+            device: device,
+            networkName: nil,
+            rawOutput: raw,
+            providerExitCode: output.exitCode
+        )
+    }
 
-        return WiFiStatus(device: device, networkName: nil, rawOutput: raw)
+    public func currentWiFiStatus(device: String, timeout: Duration) async -> WiFiStatus {
+        let output = await runner.run(
+            networksetupURL,
+            arguments: ["-getairportnetwork", device],
+            timeout: timeout
+        )
+        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
+        return WiFiStatus(
+            device: device,
+            networkName: parseNetworkName(raw),
+            rawOutput: raw,
+            providerExitCode: output.exitCode
+        )
+    }
+
+    public func readLidState(timeout: Duration) async -> ProviderReading<LidState> {
+        let output = await runner.run(
+            ioregURL,
+            arguments: ["-r", "-k", "AppleClamshellState"],
+            timeout: timeout
+        )
+        if let failure = providerFailure(for: output, operation: "lid state") {
+            return .failure(failure)
+        }
+        let raw = preferredOutput(output)
+        guard !raw.isEmpty else {
+            return .failure(
+                ConnectivityProviderFailure(
+                    category: .unavailable,
+                    detail: "The lid state provider returned no reading."
+                )
+            )
+        }
+        guard let closed = parseClamshellClosed(raw) else {
+            return .failure(
+                ConnectivityProviderFailure(
+                    category: .malformedOutput,
+                    detail: "The lid state provider returned an unreadable value."
+                )
+            )
+        }
+        return .value(closed ? .closed : .open)
+    }
+
+    public func readConnectivity(
+        device: String,
+        timeout: Duration
+    ) async -> WiFiConnectivityObservation {
+        async let powerOutput = runner.run(
+            networksetupURL,
+            arguments: ["-getairportpower", device],
+            timeout: timeout
+        )
+        async let ssidOutput = runner.run(
+            networksetupURL,
+            arguments: ["-getairportnetwork", device],
+            timeout: timeout
+        )
+        async let addressOutput = runner.run(
+            ifconfigURL,
+            arguments: [device],
+            timeout: timeout
+        )
+        async let routeOutput = runner.run(
+            routeURL,
+            arguments: ["-n", "get", "default"],
+            timeout: timeout
+        )
+
+        let outputs = await (powerOutput, ssidOutput, addressOutput, routeOutput)
+        return WiFiConnectivityObservation(
+            device: device,
+            power: powerReading(outputs.0),
+            ssid: ssidReading(outputs.1),
+            addresses: addressReading(outputs.2),
+            defaultRouteInterface: routeReading(outputs.3)
+        )
     }
 
     public func currentWiFiPower(device: String) async -> Bool? {
@@ -124,39 +179,69 @@ public final class LocalTravelCommandGateway: TravelCommandGateway, @unchecked S
         return parseWiFiPower(raw)
     }
 
-    public func setWiFiPower(device: String, enabled: Bool) async {
-        _ = await associationManager?.setPower(device: device, enabled: enabled)
-        _ = await runner.run(
+    public func currentWiFiPower(device: String, timeout: Duration) async -> Bool? {
+        let output = await runner.run(
+            networksetupURL,
+            arguments: ["-getairportpower", device],
+            timeout: timeout
+        )
+        guard output.exitCode == 0 else { return nil }
+        let raw = output.standardOutput.isEmpty ? output.standardError : output.standardOutput
+        return parseWiFiPower(raw)
+    }
+
+    public func setWiFiPower(device: String, enabled: Bool) async -> CommandResult {
+        if let associationResult = await associationManager?.setPower(
+            device: device,
+            enabled: enabled
+        ), associationResult.succeeded {
+            return associationResult
+        }
+        let output = await runner.run(
             networksetupURL,
             arguments: ["-setairportpower", device, enabled ? "on" : "off"]
         )
+        return commandResult(from: output)
+    }
+
+    public func setWiFiPower(
+        device: String,
+        enabled: Bool,
+        timeout: Duration
+    ) async -> CommandResult {
+        let output = await runner.run(
+            networksetupURL,
+            arguments: ["-setairportpower", device, enabled ? "on" : "off"],
+            timeout: timeout
+        )
+        return commandResult(from: output)
     }
 
     public func joinWiFi(device: String, ssid: String, password: String?) async -> CommandResult {
+        await joinWiFi(
+            device: device,
+            ssid: ssid,
+            password: password,
+            timeout: .seconds(15)
+        )
+    }
+
+    public func joinWiFi(
+        device: String,
+        ssid: String,
+        password: String?,
+        timeout: Duration
+    ) async -> CommandResult {
         var arguments = ["-setairportnetwork", device, ssid]
         if let password, !password.isEmpty {
             arguments.append(password)
         }
-        let output = await runner.run(networksetupURL, arguments: arguments)
-        if
-            let associationManager,
-            let password,
-            !password.isEmpty
-        {
-            let associationResult = await associationManager.associate(
-                device: device,
-                ssid: ssid,
-                password: password
-            )
-            if associationResult.succeeded {
-                return associationResult
-            }
-        }
-        return CommandResult(
-            exitCode: output.exitCode,
-            standardOutput: output.standardOutput,
-            standardError: output.standardError
+        let output = await runner.run(
+            networksetupURL,
+            arguments: arguments,
+            timeout: timeout
         )
+        return commandResult(from: output)
     }
 
     public func openWiFiSettings() async {
@@ -167,24 +252,108 @@ public final class LocalTravelCommandGateway: TravelCommandGateway, @unchecked S
     }
 
     public func isCodexRunning() async -> Bool {
-        let output = await runner.run(pgrepURL, arguments: ["-x", "Codex"])
-        return output.exitCode == 0 && !output.standardOutput.isEmpty
+        let applications = await runningApplicationProvider.runningApplications()
+        return applications.contains { application in
+            application.bundleIdentifier == "com.openai.codex" && !application.isTerminated
+        }
     }
 
-    private func deviceHasDefaultRouteAndAddress(_ device: String) async -> Bool {
-        let routeOutput = await runner.run(routeURL, arguments: ["-n", "get", "default"])
-        let routeRaw = routeOutput.standardOutput.isEmpty
-            ? routeOutput.standardError
-            : routeOutput.standardOutput
-        guard parseDefaultRouteInterface(routeRaw) == device else {
-            return false
+    private func powerReading(_ output: ShellCommandOutput) -> ProviderReading<Bool> {
+        if let failure = providerFailure(for: output, operation: "Wi-Fi power") {
+            return .failure(failure)
         }
+        guard let power = parseWiFiPower(preferredOutput(output)) else {
+            return .failure(
+                ConnectivityProviderFailure(
+                    category: .malformedOutput,
+                    detail: "The Wi-Fi power provider returned an unreadable value."
+                )
+            )
+        }
+        return .value(power)
+    }
 
-        let addressOutput = await runner.run(ipconfigURL, arguments: ["getifaddr", device])
-        let addressRaw = addressOutput.standardOutput.isEmpty
-            ? addressOutput.standardError
-            : addressOutput.standardOutput
-        return parseIPv4Address(addressRaw) != nil
+    private func ssidReading(
+        _ output: ShellCommandOutput
+    ) -> ProviderReading<ExactUTF8String?> {
+        if let failure = providerFailure(for: output, operation: "Wi-Fi association") {
+            return .failure(failure)
+        }
+        let raw = preferredOutput(output)
+        if let ssid = parseExactNetworkName(raw) {
+            return .value(ssid)
+        }
+        if isOrdinaryWiFiDisconnection(raw) {
+            return .value(nil)
+        }
+        return .failure(
+            ConnectivityProviderFailure(
+                category: raw.isEmpty ? .unavailable : .malformedOutput,
+                detail: raw.isEmpty
+                    ? "The Wi-Fi association provider returned no reading."
+                    : "The Wi-Fi association provider returned an unreadable value."
+            )
+        )
+    }
+
+    private func addressReading(
+        _ output: ShellCommandOutput
+    ) -> ProviderReading<[IPAddress]> {
+        if let failure = providerFailure(for: output, operation: "interface address") {
+            return .failure(failure)
+        }
+        switch parseInterfaceAddresses(preferredOutput(output)) {
+        case let .success(addresses):
+            return .value(addresses)
+        case .failure:
+            return .failure(
+                ConnectivityProviderFailure(
+                    category: .malformedOutput,
+                    detail: "The interface address provider returned an unreadable value."
+                )
+            )
+        }
+    }
+
+    private func routeReading(
+        _ output: ShellCommandOutput
+    ) -> ProviderReading<String?> {
+        let raw = preferredOutput(output)
+        if output.exitCode != 0, isOrdinaryMissingRoute(raw) {
+            return .value(nil)
+        }
+        if let failure = providerFailure(for: output, operation: "default route") {
+            return .failure(failure)
+        }
+        if let interface = parseDefaultRouteInterface(raw) {
+            return .value(interface)
+        }
+        return .failure(
+            ConnectivityProviderFailure(
+                category: raw.isEmpty ? .unavailable : .malformedOutput,
+                detail: raw.isEmpty
+                    ? "The default-route provider returned no reading."
+                    : "The default-route provider returned an unreadable value."
+            )
+        )
+    }
+
+    private func commandResult(from output: ShellCommandOutput) -> CommandResult {
+        let failureCategory: CommandResult.FailureCategory?
+        switch output.exitCode {
+        case 124:
+            failureCategory = .timedOut
+        case 130:
+            failureCategory = .cancelled
+        default:
+            failureCategory = nil
+        }
+        return CommandResult(
+            exitCode: output.exitCode,
+            standardOutput: output.standardOutput,
+            standardError: output.standardError,
+            failureCategory: failureCategory
+        )
     }
 }
 
@@ -215,8 +384,11 @@ public final class CoreWLANAssociationManager: WiFiAssociationManaging, @uncheck
         }
 
         do {
-            if !interface.powerOn() {
-                try interface.setPower(true)
+            guard interface.powerOn() else {
+                return CommandResult(
+                    exitCode: 1,
+                    standardError: "Wi-Fi power is off; enable it before association."
+                )
             }
             let networks = try interface.scanForNetworks(withName: ssid)
             guard let network = networks.first else {
@@ -259,30 +431,21 @@ public func keepAwakeArguments(processID: Int32) -> [String] {
     ["-dim", "-w", String(processID)]
 }
 
-public enum TravelCommandError: LocalizedError {
-    case commandFailed(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .commandFailed(let detail):
-            return detail.isEmpty ? "Command failed." : detail
-        }
-    }
+public func parseNetworkName(_ rawOutput: String) -> String? {
+    parseExactNetworkName(rawOutput)?.stringValue
 }
 
-public func parseNetworkName(_ rawOutput: String) -> String? {
-    for line in rawOutput.split(separator: "\n") {
-        let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2 else {
+public func parseExactNetworkName(_ rawOutput: String) -> ExactUTF8String? {
+    let prefix = "Current Wi-Fi Network: "
+    for rawLine in rawOutput.split(
+        separator: "\n",
+        omittingEmptySubsequences: false
+    ) {
+        let line = rawLine.last == "\r" ? rawLine.dropLast() : rawLine[...]
+        guard line.hasPrefix(prefix) else {
             continue
         }
-        guard parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedCaseInsensitiveCompare("Current Wi-Fi Network") == .orderedSame
-        else {
-            continue
-        }
-        let network = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-        return network.isEmpty ? nil : network
+        return ExactUTF8String(String(line.dropFirst(prefix.count)))
     }
     return nil
 }
@@ -310,77 +473,25 @@ public func parseIPv4Address(_ rawOutput: String) -> String? {
     return address
 }
 
-public func parsePowerSettingsSnapshot(_ rawOutput: String) -> PowerSettingsSnapshot? {
-    var currentProfile: PowerProfileKind?
-    var battery = PowerProfileSettings(sleep: nil, ttysKeepAwake: nil)
-    var ac = PowerProfileSettings(sleep: nil, ttysKeepAwake: nil)
+public enum InterfaceAddressParseError: Error, Equatable, Sendable {
+    case malformedAddress
+}
 
+public func parseInterfaceAddresses(
+    _ rawOutput: String
+) -> Result<[IPAddress], InterfaceAddressParseError> {
+    var addresses: [IPAddress] = []
     for rawLine in rawOutput.split(separator: "\n") {
-        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-        if line == "Battery Power:" {
-            currentProfile = .battery
+        let fields = rawLine.split(whereSeparator: \Character.isWhitespace)
+        guard fields.first == "inet" || fields.first == "inet6" else {
             continue
         }
-        if line == "AC Power:" {
-            currentProfile = .ac
-            continue
+        guard fields.count >= 2, let address = IPAddress(String(fields[1])) else {
+            return .failure(.malformedAddress)
         }
-
-        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard parts.count == 2, let value = Int(parts[1]) else {
-            continue
-        }
-
-        switch (currentProfile, parts[0]) {
-        case (.battery, "sleep"):
-            battery.sleep = value
-        case (.battery, "ttyskeepawake"):
-            battery.ttysKeepAwake = value
-        case (.ac, "sleep"):
-            ac.sleep = value
-        case (.ac, "ttyskeepawake"):
-            ac.ttysKeepAwake = value
-        default:
-            continue
-        }
+        addresses.append(address)
     }
-
-    let batterySnapshot = battery.sleep == nil && battery.ttysKeepAwake == nil ? nil : battery
-    let acSnapshot = ac.sleep == nil && ac.ttysKeepAwake == nil ? nil : ac
-    guard batterySnapshot != nil || acSnapshot != nil else {
-        return nil
-    }
-    return PowerSettingsSnapshot(battery: batterySnapshot, ac: acSnapshot)
-}
-
-public func pmsetRestoreCommands(_ snapshot: PowerSettingsSnapshot) -> [String] {
-    [
-        pmsetRestoreCommand(flag: "-b", profile: snapshot.battery),
-        pmsetRestoreCommand(flag: "-c", profile: snapshot.ac)
-    ].compactMap { $0 }
-}
-
-private enum PowerProfileKind {
-    case battery
-    case ac
-}
-
-private func pmsetRestoreCommand(flag: String, profile: PowerProfileSettings?) -> String? {
-    guard let profile else {
-        return nil
-    }
-
-    var arguments: [String] = []
-    if let sleep = profile.sleep {
-        arguments.append("sleep \(sleep)")
-    }
-    if let ttysKeepAwake = profile.ttysKeepAwake {
-        arguments.append("ttyskeepawake \(ttysKeepAwake)")
-    }
-    guard !arguments.isEmpty else {
-        return nil
-    }
-    return "pmset \(flag) \(arguments.joined(separator: " "))"
+    return .success(addresses)
 }
 
 public func parseWiFiPower(_ rawOutput: String) -> Bool? {
@@ -390,22 +501,6 @@ public func parseWiFiPower(_ rawOutput: String) -> Bool? {
     }
     if normalized.hasSuffix(": off") {
         return false
-    }
-    return nil
-}
-
-public func parseDisablesleep(_ rawOutput: String) -> Bool? {
-    for line in rawOutput.split(separator: "\n") {
-        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard parts.count == 2, parts[0] == "disablesleep" || parts[0] == "SleepDisabled" else {
-            continue
-        }
-        if parts[1] == "1" {
-            return true
-        }
-        if parts[1] == "0" {
-            return false
-        }
     }
     return nil
 }
@@ -423,6 +518,44 @@ public func parseClamshellClosed(_ rawOutput: String) -> Bool? {
         }
     }
     return nil
+}
+
+private func preferredOutput(_ output: ShellCommandOutput) -> String {
+    output.standardOutput.isEmpty ? output.standardError : output.standardOutput
+}
+
+private func providerFailure(
+    for output: ShellCommandOutput,
+    operation: String
+) -> ConnectivityProviderFailure? {
+    guard output.exitCode != 0 else {
+        return nil
+    }
+    if output.exitCode == 124 {
+        return ConnectivityProviderFailure(
+            category: .timedOut,
+            detail: "The \(operation) provider timed out."
+        )
+    }
+    let raw = preferredOutput(output)
+    let unavailable = output.exitCode == 127
+        || raw.localizedCaseInsensitiveContains("no such file")
+    return ConnectivityProviderFailure(
+        category: unavailable ? .unavailable : .commandFailed,
+        detail: unavailable
+            ? "The \(operation) provider is unavailable."
+            : "The \(operation) provider command failed with exit \(output.exitCode)."
+    )
+}
+
+private func isOrdinaryWiFiDisconnection(_ rawOutput: String) -> Bool {
+    rawOutput.localizedCaseInsensitiveContains("not associated with an AirPort network")
+        || rawOutput.localizedCaseInsensitiveContains("Wi-Fi power is currently off")
+}
+
+private func isOrdinaryMissingRoute(_ rawOutput: String) -> Bool {
+    rawOutput.localizedCaseInsensitiveContains("not in table")
+        || rawOutput.localizedCaseInsensitiveContains("route has not been found")
 }
 
 public func parseWiFiDevice(_ rawOutput: String) -> String? {
@@ -445,32 +578,4 @@ public func parsePreferredNetworks(_ rawOutput: String) -> [String] {
         .split(separator: "\n")
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("Preferred networks on") }
-}
-
-public func parseScannedNetworks(_ rawOutput: String) -> [String] {
-    var networks: [String] = []
-    for rawLine in rawOutput.split(separator: "\n") {
-        let line = String(rawLine)
-        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            continue
-        }
-        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("SSID ") else {
-            continue
-        }
-
-        let bssidRange = line.range(
-            of: #"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}"#,
-            options: .regularExpression
-        )
-        let ssid = if let bssidRange {
-            String(line[..<bssidRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            line.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if !ssid.isEmpty, !networks.contains(ssid) {
-            networks.append(ssid)
-        }
-    }
-    return networks
 }

@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+ALLOWED_FIELDS = {
+    "id",
+    "feature_dir",
+    "priority",
+    "status",
+    "notes",
+    "files",
+    "revalidate_on",
+}
+ALLOWED_STATUSES = {"draft", "ready", "revalidate", "blocked", "done"}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate docs/features/status.json.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--feature", help="Validate one feature id.")
+    group.add_argument("--all", action="store_true", help="Validate every feature.")
+    parser.add_argument("--root", default=".", help="Repository root.")
+    parser.add_argument("--status", default="docs/features/status.json")
+    return parser.parse_args()
+
+
+def safe_prefix(value: object, feature_id: str, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{feature_id}: {field} contains an empty path")
+    path = PurePosixPath(value.strip())
+    if path.is_absolute() or ".." in path.parts or path.as_posix() == ".":
+        raise ValueError(f"{feature_id}: {field} path is not repository-relative: {value}")
+    return path.as_posix()
+
+
+def validate_item(root: Path, item: object) -> list[str]:
+    if not isinstance(item, dict):
+        return ["queue entries must be objects"]
+    feature_id = item.get("id", "<unknown>")
+    errors: list[str] = []
+    unknown = set(item) - ALLOWED_FIELDS
+    if unknown:
+        errors.append(f"{feature_id}: unsupported fields: {', '.join(sorted(unknown))}")
+    if not isinstance(feature_id, str) or not feature_id.strip():
+        errors.append("feature id must be a non-empty string")
+    feature_dir = item.get("feature_dir")
+    if not isinstance(feature_dir, str) or not feature_dir.strip():
+        errors.append(f"{feature_id}: feature_dir must be a non-empty string")
+    else:
+        try:
+            relative = safe_prefix(feature_dir, str(feature_id), "feature_dir")
+            if not (root / relative).is_dir():
+                errors.append(f"{feature_id}: feature_dir does not exist: {relative}")
+        except ValueError as exc:
+            errors.append(str(exc))
+    if not isinstance(item.get("priority"), (int, float)):
+        errors.append(f"{feature_id}: priority must be numeric")
+    if item.get("status") not in ALLOWED_STATUSES:
+        errors.append(f"{feature_id}: invalid status: {item.get('status')}")
+    if not isinstance(item.get("notes"), str):
+        errors.append(f"{feature_id}: notes must be a string")
+    for field in ("files", "revalidate_on"):
+        values = item.get(field)
+        if not isinstance(values, list):
+            errors.append(f"{feature_id}: {field} must be a list")
+            continue
+        try:
+            prefixes = [safe_prefix(value, str(feature_id), field) for value in values]
+            if len(prefixes) != len(set(prefixes)):
+                errors.append(f"{feature_id}: {field} contains duplicate paths")
+        except ValueError as exc:
+            errors.append(str(exc))
+    if item.get("status") == "done" and not item.get("revalidate_on"):
+        errors.append(f"{feature_id}: done item must declare revalidate_on")
+    return errors
+
+
+def main() -> int:
+    args = parse_args()
+    root = Path(args.root).resolve()
+    status_path = root / args.status
+    try:
+        queue: Any = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"validate_feature_queue: {exc}", file=sys.stderr)
+        return 2
+    features = queue.get("features") if isinstance(queue, dict) else None
+    if not isinstance(features, list):
+        print("validate_feature_queue: features must be a list", file=sys.stderr)
+        return 2
+    selected = features if args.all else [
+        item for item in features if isinstance(item, dict) and item.get("id") == args.feature
+    ]
+    errors = [] if args.all or len(selected) == 1 else [
+        f"feature {args.feature} must exist exactly once"
+    ]
+    ids = [item.get("id") for item in features if isinstance(item, dict)]
+    if len(ids) != len(set(ids)):
+        errors.append("feature ids must be unique")
+    for item in selected:
+        errors.extend(validate_item(root, item))
+    if errors:
+        for error in errors:
+            print(f"validate_feature_queue: {error}", file=sys.stderr)
+        return 2
+    print(f"validated {len(selected)} feature queue item(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

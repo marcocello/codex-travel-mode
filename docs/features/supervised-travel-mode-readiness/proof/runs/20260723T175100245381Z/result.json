@@ -1,0 +1,29 @@
+{
+  "capture_pid": 66106,
+  "cleanup": {
+    "kill_sent": false,
+    "status": "clear",
+    "term_sent": false
+  },
+  "command": [
+    "docs/features/supervised-travel-mode-readiness/proof/run.sh"
+  ],
+  "cwd": "<repository-root>",
+  "duration_seconds": 2.960705,
+  "ended_at": "2026-07-23T17:51:03.206195+00:00",
+  "returncode": 3,
+  "runner_pgid": 66109,
+  "runner_pid": 66109,
+  "runner_returncode": 3,
+  "runtime": {
+    "capture_python": "3.13.3",
+    "capture_python_executable": "python3",
+    "machine": "arm64",
+    "platform": "Darwin",
+    "platform_release": "25.5.0",
+    "shell": "/opt/homebrew/bin/zsh"
+  },
+  "started_at": "2026-07-23T17:51:00.245595+00:00",
+  "status": "FAIL",
+  "timeout_seconds": 1800.0
+}

@@ -34,7 +34,10 @@ public final class TravelModeEngine: Sendable {
             return .preservedCurrentWiFi(network)
         }
 
-        await gateway.setWiFiPower(device: device, enabled: true)
+        let powerResult = await gateway.setWiFiPower(device: device, enabled: true)
+        guard powerResult.succeeded else {
+            return .hotspotFailed(powerResult.detail)
+        }
         let password = settings.trimmedHotspotPassword.isEmpty
             ? passwordProvider()
             : settings.trimmedHotspotPassword

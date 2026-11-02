@@ -1,0 +1,1 @@
+The repaired seven-test proof contract compiled and executed. It failed only because the proof host still exits with EX_CONFIG and emits no raw scenario artifacts or crash checkpoints. This is the intended strengthened red state before production implementation; the newly added exact binding and bounded liveness assertions were accepted by the compiler.

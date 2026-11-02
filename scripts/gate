@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+swift build --disable-sandbox
+swift build --disable-sandbox --product travel-session-proof-host
+swift build --disable-sandbox --product sleep-override-lease-proof-helper
+swift build --disable-sandbox --product sleep-override-lease-proof-owner
+swift build --disable-sandbox --product sleep-override-lease-fake-power
+bin_path="$(swift build --disable-sandbox --show-bin-path)"
+export TRAVEL_SESSION_PROOF_HOST="$bin_path/travel-session-proof-host"
+export SLEEP_OVERRIDE_LEASE_PROOF_HELPER="$bin_path/sleep-override-lease-proof-helper"
+export SLEEP_OVERRIDE_LEASE_PROOF_OWNER="$bin_path/sleep-override-lease-proof-owner"
+export SLEEP_OVERRIDE_LEASE_FAKE_POWER="$bin_path/sleep-override-lease-fake-power"
+swift test --disable-sandbox
+bash -n scripts/build-local-app.sh docs/features/*/proof/*.sh
+git diff --check
+scripts/validate_feature_queue --all
+
+echo "GATE: PASS"

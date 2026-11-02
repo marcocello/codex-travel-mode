@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import signal
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from types import FrameType
+from typing import Any
+
+
+class CaptureSignal(Exception):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+
+
+def positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be positive") from exc
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be positive")
+    return seconds
+
+
+def nonempty_note(value: str) -> str:
+    note = value.strip()
+    if not note:
+        raise argparse.ArgumentTypeError("note must not be empty")
+    return note
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run FEATURE_DIR/proof/run.sh in a contained process group and create one "
+            "retained attempt."
+        ),
+        epilog=(
+            "Exit status is the runner status; 2 for invalid input, 124 for timeout, "
+            "125 for cleanup failure, or 128+signal for interruption."
+        ),
+    )
+    parser.add_argument("--feature-dir", required=True, type=Path)
+    parser.add_argument("--timeout-seconds", required=True, type=positive_seconds)
+    parser.add_argument("--note", required=True, type=nonempty_note)
+    return parser.parse_args()
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def repository_root(cwd: Path) -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 else cwd.resolve()
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def runtime_context() -> dict[str, str]:
+    return {
+        "capture_python": sys.version.split()[0],
+        "capture_python_executable": Path(sys.executable).name,
+        "machine": platform.machine(),
+        "platform": platform.system(),
+        "platform_release": platform.release(),
+        "shell": os.environ.get("SHELL", ""),
+    }
+
+
+def process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def wait_for_group_exit(pgid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while process_group_exists(pgid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return not process_group_exists(pgid)
+
+
+def cleanup_process_group(pgid: int) -> dict[str, bool | str]:
+    cleanup: dict[str, bool | str] = {
+        "kill_sent": False,
+        "status": "clear",
+        "term_sent": False,
+    }
+    if not process_group_exists(pgid):
+        return cleanup
+    cleanup["term_sent"] = True
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return cleanup
+    except PermissionError:
+        cleanup["status"] = "denied"
+        return cleanup
+    if wait_for_group_exit(pgid, 1):
+        cleanup["status"] = "terminated"
+        return cleanup
+    cleanup["kill_sent"] = True
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        cleanup["status"] = "terminated"
+        return cleanup
+    except PermissionError:
+        cleanup["status"] = "denied"
+        return cleanup
+    cleanup["status"] = "killed" if wait_for_group_exit(pgid, 1) else "remaining"
+    return cleanup
+
+
+def redact_log(data: bytes, root: Path) -> bytes:
+    replacements = [
+        (os.fsencode(root), b"<repository-root>"),
+        (os.fsencode(Path.home()), b"<user-home>"),
+    ]
+    for protected, label in replacements:
+        if protected:
+            data = data.replace(protected, label)
+    return data
+
+
+def signal_handler(signum: int, _frame: FrameType | None) -> None:
+    raise CaptureSignal(signum)
+
+
+def install_signal_handlers() -> dict[int, Any]:
+    watched = (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT)
+    previous = {signum: signal.getsignal(signum) for signum in watched}
+    for signum in watched:
+        signal.signal(signum, signal_handler)
+    return previous
+
+
+def restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
+def validated_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path, Path]:
+    root = repository_root(Path.cwd())
+    feature_dir = (
+        args.feature_dir if args.feature_dir.is_absolute() else root / args.feature_dir
+    ).resolve()
+    try:
+        feature_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("feature directory escapes repository root") from exc
+    feature = feature_dir / "FEATURE.md"
+    proof = feature_dir / "PROOF.md"
+    runner = feature_dir / "proof" / "run.sh"
+    for label, path in (("FEATURE.md", feature), ("PROOF.md", proof), ("proof/run.sh", runner)):
+        if not path.is_file():
+            raise ValueError(f"missing {label}: {path}")
+    if not runner.stat().st_mode & 0o111:
+        raise ValueError(f"runner not executable: {runner}")
+    return root, feature_dir, feature, proof, runner
+
+
+def run_attempt(
+    command: list[str],
+    root: Path,
+    run_dir: Path,
+    execution: dict[str, Any],
+    timeout: float,
+) -> tuple[str, int, int | None, dict[str, bool | str], int | None]:
+    stdout_path = run_dir / "stdout.txt"
+    stderr_path = run_dir / "stderr.txt"
+    process: subprocess.Popen[bytes] | None = None
+    runner_returncode: int | None = None
+    final_returncode = 126
+    status = "FAIL"
+    interrupted_signal: int | None = None
+    cleanup: dict[str, bool | str] = {
+        "kill_sent": False,
+        "status": "not_started",
+        "term_sent": False,
+    }
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        previous_handlers = install_signal_handlers()
+        try:
+            environment = os.environ.copy()
+            environment["PROOF_ATTEMPT_DIR"] = str(run_dir)
+            process = subprocess.Popen(
+                command,
+                cwd=root,
+                env=environment,
+                stdout=stdout,
+                stderr=stderr,
+                process_group=0,
+            )
+            execution["runner_pid"] = process.pid
+            execution["runner_pgid"] = process.pid
+            write_json(run_dir / "attempt-start.json", {**execution, "status": "STARTED"})
+            try:
+                runner_returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                status = "TIMEOUT"
+                final_returncode = 124
+                stderr.write(f"proof_run_capture: timed out after {timeout:g} seconds\n".encode())
+            except KeyboardInterrupt:
+                interrupted_signal = signal.SIGINT
+            except CaptureSignal as exc:
+                interrupted_signal = exc.signum
+        except OSError as exc:
+            stderr.write(f"proof_run_capture: cannot execute runner: {exc}\n".encode())
+        finally:
+            restore_signal_handlers(previous_handlers)
+            if process is not None:
+                cleanup = cleanup_process_group(process.pid)
+                if process.poll() is None:
+                    try:
+                        runner_returncode = process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        cleanup["status"] = "remaining"
+        if interrupted_signal is not None:
+            status = "INTERRUPTED"
+            final_returncode = 128 + interrupted_signal
+            stderr.write(f"proof_run_capture: interrupted by signal {interrupted_signal}\n".encode())
+        elif status != "TIMEOUT" and runner_returncode is not None:
+            if runner_returncode == 0:
+                status, final_returncode = "PASS", 0
+            elif runner_returncode < 0:
+                status, final_returncode = "INTERRUPTED", 128 + abs(runner_returncode)
+            else:
+                status, final_returncode = "FAIL", runner_returncode
+        if cleanup["status"] in {"denied", "remaining"}:
+            status, final_returncode = "FAIL", 125
+            stderr.write(b"proof_run_capture: process group cleanup failed\n")
+        stdout.flush()
+        stderr.flush()
+        stdout.seek(0)
+        stderr.seek(0)
+        stdout_path.write_bytes(redact_log(stdout.read(), root))
+        stderr_path.write_bytes(redact_log(stderr.read(), root))
+    return status, final_returncode, runner_returncode, cleanup, interrupted_signal
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        root, feature_dir, feature, proof, runner = validated_paths(args)
+    except ValueError as exc:
+        print(f"proof_run_capture: {exc}", file=sys.stderr)
+        return 2
+    run_dir = feature_dir / "proof" / "runs" / timestamp()
+    run_dir.mkdir(parents=True)
+    command = [runner.relative_to(root).as_posix()]
+    started_clock = time.monotonic()
+    execution: dict[str, Any] = {
+        "capture_pid": os.getpid(),
+        "command": command,
+        "cwd": "<repository-root>",
+        "runtime": runtime_context(),
+        "started_at": now(),
+        "timeout_seconds": args.timeout_seconds,
+    }
+    write_json(run_dir / "attempt-start.json", {**execution, "status": "STARTED"})
+    shutil.copy2(feature, run_dir / "FEATURE.md")
+    shutil.copy2(proof, run_dir / "PROOF.md")
+    shutil.copy2(runner, run_dir / "run.sh")
+    (run_dir / "notes.md").write_text(args.note + "\n", encoding="utf-8")
+    status, code, runner_code, cleanup, interrupted = run_attempt(
+        command, root, run_dir, execution, args.timeout_seconds
+    )
+    result: dict[str, Any] = {
+        **execution,
+        "cleanup": cleanup,
+        "duration_seconds": round(time.monotonic() - started_clock, 6),
+        "ended_at": now(),
+        "returncode": code,
+        "runner_returncode": runner_code,
+        "status": status,
+    }
+    if interrupted is not None:
+        result["signal"] = interrupted
+    write_json(run_dir / "result.json", result)
+    print(f"proof_run_capture: {run_dir}")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

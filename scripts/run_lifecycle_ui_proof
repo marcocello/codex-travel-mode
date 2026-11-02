@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      OUTPUT="${2:?--output requires a directory}"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$OUTPUT" ]]; then
+  echo "Usage: $0 --output DIRECTORY" >&2
+  exit 2
+fi
+
+RUNTIME_PARENT="${TMPDIR:-/tmp}"
+RUNTIME_ROOT="$(mktemp -d "$RUNTIME_PARENT/codex-travel-mode-lifecycle-runtime.XXXXXX")"
+cleanup_runtime() {
+  if [[ -d "$RUNTIME_ROOT" \
+    && "$(basename "$RUNTIME_ROOT")" == codex-travel-mode-lifecycle-runtime.* ]]; then
+    /bin/rm -rf -- "$RUNTIME_ROOT"
+  fi
+}
+trap cleanup_runtime EXIT
+
+mkdir -p "$OUTPUT/fragments" "$OUTPUT/scenarios" "$RUNTIME_ROOT/build"
+APP="$($ROOT/scripts/build-lifecycle-ui-proof-app --output "$RUNTIME_ROOT/build" | /usr/bin/tail -n 1)"
+EXECUTABLE="$APP/Contents/MacOS/lifecycle-ui-proof-app"
+READBACK="$OUTPUT/lifecycle-readback.json"
+
+if [[ ! -x "$EXECUTABLE" ]]; then
+  echo "Lifecycle proof executable is missing: $EXECUTABLE" >&2
+  exit 1
+fi
+
+scenarios=(
+  clean-off-quit
+  pre-start-cancel
+  preparing-quit-before-journal
+  preparing-quit-after-journal
+  preparing-quit-after-lease
+  preparing-quit-after-lease-failure
+  active-dismiss-reopen
+  stop-success
+  stop-failure-retry-success
+  quit-failure-retry-success
+  repeated-quit-delayed-success
+  repeated-quit-failure
+  startup-recovery-success
+  startup-recovery-failure
+  quit-during-startup-recovery
+  quit-during-startup-recovery-failure
+)
+scenario_fragments=()
+
+is_retained_scenario() {
+  [[ "$1" == "preparing-quit-after-lease-failure" \
+    || "$1" == "repeated-quit-failure" \
+    || "$1" == "startup-recovery-failure" \
+    || "$1" == "quit-during-startup-recovery-failure" ]]
+}
+
+requires_liveness_checkpoint() {
+  [[ "$1" == "quit-failure-retry-success" ]] || is_retained_scenario "$1"
+}
+
+append_process_receipt() {
+  local fragment="$1"
+  local observed_pid="$2"
+  local state="$3"
+  local wait_status="$4"
+  local temporary="$fragment.tmp"
+  jq \
+    --arg state "$state" \
+    --argjson observer_pid "$$" \
+    --argjson observed_pid "$observed_pid" \
+    --argjson wait_status "$wait_status" '
+      (([
+        .input_events[], .lifecycle_publications[], .pending_quit_publications[],
+        .popover_records[], .status_item_records[], .accessibility_snapshots[],
+        .journal_snapshots[], .commands[], .termination_records[],
+        .activation_tasks[], .process_records[]
+      ] | map(.sequence) | max // 0) + 1) as $sequence
+      | .process_records += [{
+          sequence: $sequence,
+          state: $state,
+          observer_pid: $observer_pid,
+          observed_pid: $observed_pid,
+          wait_status: $wait_status
+        }]
+    ' "$fragment" > "$temporary"
+  mv "$temporary" "$fragment"
+}
+
+for scenario in "${scenarios[@]}"; do
+  scenario_dir="$OUTPUT/scenarios/$scenario"
+  fragment="$OUTPUT/fragments/$scenario.json"
+  marker="$scenario_dir/ready.marker"
+  liveness_receipt="$scenario_dir/liveness-receipt.json"
+  stdout="$scenario_dir/stdout.txt"
+  stderr="$scenario_dir/stderr.txt"
+  launch_id="$(/usr/bin/uuidgen)"
+  mkdir -p "$scenario_dir"
+  rm -f "$fragment" "$marker" "$liveness_receipt" "$liveness_receipt.tmp"
+
+  "$EXECUTABLE" \
+    --scenario "$scenario" \
+    --launch-id "$launch_id" \
+    --fragment "$fragment" \
+    --marker "$marker" \
+    --liveness-receipt "$liveness_receipt" \
+    --screenshots "$OUTPUT" \
+    >"$stdout" 2>"$stderr" &
+  app_pid=$!
+
+  if requires_liveness_checkpoint "$scenario"; then
+    marker_ready=false
+    for _ in {1..3000}; do
+      if [[ -s "$marker" ]]; then
+        marker_ready=true
+        break
+      fi
+      if ! kill -0 "$app_pid" 2>/dev/null; then
+        wait "$app_pid" || true
+        /bin/cat "$stderr" >&2
+        echo "Lifecycle scenario exited before its liveness checkpoint: $scenario" >&2
+        exit 1
+      fi
+      sleep 0.01
+    done
+    if [[ "$marker_ready" != true ]]; then
+      kill -KILL "$app_pid" 2>/dev/null || true
+      wait "$app_pid" 2>/dev/null || true
+      /bin/cat "$stderr" >&2
+      echo "Timed out waiting for lifecycle liveness checkpoint: $scenario" >&2
+      exit 1
+    fi
+    if ! kill -0 "$app_pid" 2>/dev/null; then
+      echo "Lifecycle process was not alive at its retention boundary: $scenario" >&2
+      exit 1
+    fi
+    liveness_temporary="$liveness_receipt.tmp"
+    jq -n \
+      --arg state "driver_observed_alive" \
+      --argjson observer_pid "$$" \
+      --argjson observed_pid "$app_pid" \
+      '{state: $state, observer_pid: $observer_pid, observed_pid: $observed_pid}' \
+      > "$liveness_temporary"
+    mv "$liveness_temporary" "$liveness_receipt"
+    receipt_recorded=false
+    for _ in {1..500}; do
+      if jq -e --argjson observer_pid "$$" --argjson observed_pid "$app_pid" '
+        .process_records | any(
+          .state == "driver_observed_alive"
+          and .observer_pid == $observer_pid
+          and .observed_pid == $observed_pid
+        )
+      ' "$fragment" >/dev/null 2>&1; then
+        receipt_recorded=true
+        break
+      fi
+      if ! kill -0 "$app_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.01
+    done
+    if [[ "$receipt_recorded" != true ]]; then
+      kill -KILL "$app_pid" 2>/dev/null || true
+      wait "$app_pid" 2>/dev/null || true
+      /bin/cat "$stderr" >&2
+      echo "Lifecycle app did not bind the driver liveness receipt: $scenario" >&2
+      exit 1
+    fi
+  fi
+
+  if is_retained_scenario "$scenario"; then
+    kill -KILL "$app_pid"
+    set +e
+    wait "$app_pid"
+    wait_status=$?
+    set -e
+    if [[ $wait_status -ne 137 ]]; then
+      echo "Retained lifecycle process was not reaped after SIGKILL: $scenario ($wait_status)" >&2
+      exit 1
+    fi
+    append_process_receipt "$fragment" "$app_pid" "driver_reaped" "$wait_status"
+  else
+    exited=false
+    for _ in {1..3000}; do
+      if ! kill -0 "$app_pid" 2>/dev/null; then
+        exited=true
+        break
+      fi
+      sleep 0.01
+    done
+    if [[ "$exited" != true ]]; then
+      kill -KILL "$app_pid" 2>/dev/null || true
+      wait "$app_pid" 2>/dev/null || true
+      /bin/cat "$stderr" >&2
+      echo "Timed out waiting for lifecycle scenario: $scenario" >&2
+      exit 1
+    fi
+    set +e
+    wait "$app_pid"
+    wait_status=$?
+    set -e
+    if [[ $wait_status -ne 0 ]]; then
+      /bin/cat "$stderr" >&2
+      echo "Lifecycle scenario failed: $scenario ($wait_status)" >&2
+      exit "$wait_status"
+    fi
+    process_state="driver_completed"
+    case "$scenario" in
+      clean-off-quit|preparing-quit-before-journal|preparing-quit-after-journal|preparing-quit-after-lease|quit-failure-retry-success|repeated-quit-delayed-success|quit-during-startup-recovery)
+        process_state="exited"
+        ;;
+    esac
+    append_process_receipt "$fragment" "$app_pid" "$process_state" "$wait_status"
+  fi
+
+  if ! jq -e --argjson pid "$app_pid" --arg launch_id "$launch_id" '
+    .pid == $pid and .launch_id == $launch_id and (.name | length > 0)
+  ' "$fragment" >/dev/null; then
+    echo "Lifecycle fragment is not bound to the launched app process: $scenario" >&2
+    exit 1
+  fi
+  scenario_fragments+=("$fragment")
+done
+
+BUILD_OUTPUT_DIR="$RUNTIME_ROOT/release" "$ROOT/scripts/build-local-app.sh" \
+  >"$OUTPUT/release-build.stdout.txt" 2>"$OUTPUT/release-build.stderr.txt"
+RELEASE_APP="$RUNTIME_ROOT/release/Codex Travel Mode.app"
+RELEASE_MAIN_BINARY="$RELEASE_APP/Contents/MacOS/codex-travel-mode"
+RELEASE_HELPER_BINARY="$RELEASE_APP/Contents/Resources/codex-travel-mode-sleep-helper"
+for binary in "$RELEASE_MAIN_BINARY" "$RELEASE_HELPER_BINARY"; do
+  if [[ ! -x "$binary" ]]; then
+    echo "Release app binary is missing: $binary" >&2
+    exit 1
+  fi
+done
+
+release_queries=(
+  LifecycleUIProofApp
+  LIFECYCLE_PROOF_SCENARIO
+  lifecycle-readback.json
+  run_lifecycle_ui_proof
+  lifecycle-ui-proof-app
+  "Codex Travel Mode Lifecycle Proof"
+  --launch-id
+  --fragment
+  --liveness-receipt
+)
+release_inventory="$OUTPUT/release-inventory.json"
+release_binary_records="$OUTPUT/release-binary-records.json"
+release_bundle_records="$OUTPUT/release-bundle-records.json"
+jq -n '[]' > "$release_inventory"
+jq -n '[]' > "$release_binary_records"
+jq -n '[]' > "$release_bundle_records"
+
+while IFS= read -r path; do
+  relative_path="${path#"$RELEASE_APP"/}"
+  executable=false
+  if [[ -x "$path" ]]; then executable=true; fi
+  byte_count="$(/usr/bin/stat -f %z "$path")"
+  file_type="$(/usr/bin/file -b "$path")"
+  temporary="$release_inventory.tmp"
+  jq \
+    --arg relative_path "$relative_path" \
+    --arg file_type "$file_type" \
+    --argjson executable "$executable" \
+    --argjson byte_count "$byte_count" \
+    '. + [{
+      relative_path: $relative_path,
+      file_type: $file_type,
+      executable: $executable,
+      byte_count: $byte_count
+    }]' "$release_inventory" > "$temporary"
+  mv "$temporary" "$release_inventory"
+done < <(/usr/bin/find "$RELEASE_APP" -type f | /usr/bin/sort)
+
+release_binary_paths=("$RELEASE_MAIN_BINARY" "$RELEASE_HELPER_BINARY")
+release_binary_roles=(main sleep_helper)
+for index in 0 1; do
+  binary="${release_binary_paths[$index]}"
+  role="${release_binary_roles[$index]}"
+  for query in "${release_queries[@]}"; do
+    occurrences="$({ /usr/bin/strings -a "$binary" | /usr/bin/grep -F -c -- "$query"; } || true)"
+    temporary="$release_binary_records.tmp"
+    jq \
+      --arg query "$query" \
+      --arg binary_role "$role" \
+      --arg binary_path "$binary" \
+      --argjson occurrences "$occurrences" \
+      '. + [{
+        query: $query,
+        binary_role: $binary_role,
+        binary_path: $binary_path,
+        occurrences: $occurrences
+      }]' "$release_binary_records" > "$temporary"
+    mv "$temporary" "$release_binary_records"
+  done
+done
+
+for query in "${release_queries[@]}"; do
+  matching_paths="$OUTPUT/release-matching-paths.json"
+  jq -n '[]' > "$matching_paths"
+  while IFS= read -r path; do
+    if /usr/bin/grep -a -F -q -- "$query" "$path"; then
+      relative_path="${path#"$RELEASE_APP"/}"
+      temporary="$matching_paths.tmp"
+      jq --arg path "$relative_path" '. + [$path]' "$matching_paths" > "$temporary"
+      mv "$temporary" "$matching_paths"
+    fi
+  done < <(/usr/bin/find "$RELEASE_APP" -type f | /usr/bin/sort)
+  temporary="$release_bundle_records.tmp"
+  jq \
+    --arg query "$query" \
+    --slurpfile matching_paths "$matching_paths" \
+    '. + [{
+      query: $query,
+      matching_paths: $matching_paths[0],
+      occurrences: ($matching_paths[0] | length)
+    }]' "$release_bundle_records" > "$temporary"
+  mv "$temporary" "$release_bundle_records"
+done
+
+jq -s \
+  --argjson driver_pid "$$" \
+  --slurpfile release_inventory "$release_inventory" \
+  --slurpfile release_binary_records "$release_binary_records" \
+  --slurpfile release_bundle_records "$release_bundle_records" '
+    {
+      schema_version: 1,
+      driver_pid: $driver_pid,
+      scenarios: ., 
+      screenshots: [.[].screenshots[]],
+      release_inventory: $release_inventory[0],
+      release_binary_records: $release_binary_records[0],
+      release_bundle_records: $release_bundle_records[0]
+    }
+  ' "${scenario_fragments[@]}" > "$READBACK"
+
+if jq -e '
+  .. | objects |
+  select(
+    has("pass") or has("passed") or has("verdict") or has("checks")
+    or has("assertions") or has("expected")
+  )
+' "$READBACK" >/dev/null; then
+  echo "Raw lifecycle read-back contains a forbidden self-attestation key." >&2
+  exit 1
+fi
+
+for scenario in "${scenarios[@]}"; do
+  if ! jq -e --arg scenario "$scenario" '.scenarios | any(.name == $scenario)' "$READBACK" >/dev/null; then
+    echo "Missing lifecycle scenario: $scenario" >&2
+    exit 1
+  fi
+done
+
+for screenshot in off start-confirmation preparing active restoring recovery cleanup-required; do
+  path="$OUTPUT/$screenshot.png"
+  if [[ ! -s "$path" ]] || ! /usr/bin/file "$path" | /usr/bin/grep -q 'PNG image data'; then
+    echo "Missing or invalid native lifecycle PNG: $path" >&2
+    exit 1
+  fi
+  width="$(/usr/bin/sips -g pixelWidth "$path" 2>/dev/null | /usr/bin/awk '/pixelWidth/ {print $2}')"
+  height="$(/usr/bin/sips -g pixelHeight "$path" 2>/dev/null | /usr/bin/awk '/pixelHeight/ {print $2}')"
+  if [[ -z "$width" || -z "$height" || $width -le 100 || $height -le 100 ]]; then
+    echo "Lifecycle PNG has invalid dimensions: $path" >&2
+    exit 1
+  fi
+done
+
+if ! jq -e '
+  (.release_inventory | length >= 5)
+  and (.release_binary_records | length == 18)
+  and all(.release_binary_records[]; .occurrences == 0)
+  and (.release_bundle_records | length == 9)
+  and all(.release_bundle_records[]; .occurrences == 0 and (.matching_paths | length == 0))
+  and all(.scenarios[];
+    (.pid | type == "number" and . > 0)
+    and (.launch_id | type == "string" and length > 0)
+    and (.input_events | type == "array" and length > 0)
+    and (.lifecycle_publications | type == "array" and length > 0)
+    and (.status_item_records | type == "array" and length > 0)
+    and (.accessibility_snapshots | type == "array" and length > 0)
+    and (.journal_snapshots | type == "array" and length > 0)
+    and (.process_records | type == "array" and length > 0)
+  )
+' "$READBACK" >/dev/null; then
+  echo "Lifecycle read-back failed its raw shape or release-exclusion check." >&2
+  exit 1
+fi
+
+set +e
+test_output="$({ LIFECYCLE_PROOF_ARTIFACT_PATH="$READBACK" swift test --disable-sandbox --filter MenuBarLifecycleProofTests; } 2>&1)"
+test_status=$?
+set -e
+printf '%s\n' "$test_output"
+if [[ $test_status -ne 0 ]]; then
+  exit "$test_status"
+fi
+if ! /usr/bin/grep -Eq 'Executed [1-9][0-9]* tests?|Test run with [1-9][0-9]* tests?' <<<"$test_output"; then
+  echo "Lifecycle proof filter executed zero tests." >&2
+  exit 1
+fi
+
+echo "$READBACK"

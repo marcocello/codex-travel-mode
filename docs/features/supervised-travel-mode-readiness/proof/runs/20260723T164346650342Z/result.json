@@ -1,0 +1,29 @@
+{
+  "capture_pid": 85033,
+  "cleanup": {
+    "kill_sent": false,
+    "status": "clear",
+    "term_sent": false
+  },
+  "command": [
+    "docs/features/supervised-travel-mode-readiness/proof/run.sh"
+  ],
+  "cwd": "/Users/example/software/marcocello/codex-travel-mode",
+  "duration_seconds": 0.779583,
+  "ended_at": "2026-07-23T16:43:47.430183+00:00",
+  "returncode": 1,
+  "runner_pgid": 85035,
+  "runner_pid": 85035,
+  "runner_returncode": 1,
+  "runtime": {
+    "capture_python": "3.13.3",
+    "capture_python_executable": "/usr/local/bin/python3",
+    "machine": "arm64",
+    "platform": "Darwin",
+    "platform_release": "25.5.0",
+    "shell": "/opt/homebrew/bin/zsh"
+  },
+  "started_at": "2026-07-23T16:43:46.650629+00:00",
+  "status": "FAIL",
+  "timeout_seconds": 180.0
+}

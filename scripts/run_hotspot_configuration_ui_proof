@@ -1,0 +1,420 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP=""
+OUTPUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app)
+      APP="${2:?--app requires an app bundle}"
+      shift 2
+      ;;
+    --output)
+      OUTPUT="${2:?--output requires a directory}"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$APP" || -z "$OUTPUT" ]]; then
+  echo "Usage: $0 --app APP_BUNDLE --output DIRECTORY" >&2
+  exit 2
+fi
+
+EXECUTABLE="$APP/Contents/MacOS/hotspot-configuration-proof-app"
+WORKER="$APP/Contents/Resources/hotspot-configuration-proof-worker"
+if [[ ! -x "$EXECUTABLE" ]]; then
+  echo "Proof app executable is missing: $EXECUTABLE" >&2
+  exit 1
+fi
+if [[ ! -x "$WORKER" ]]; then
+  echo "Proof worker executable is missing: $WORKER" >&2
+  exit 1
+fi
+
+FRAGMENTS="$OUTPUT/ui-fragments-$(/usr/bin/uuidgen)"
+PROCESS_FRAGMENTS="$OUTPUT/process-fragments-$(/usr/bin/uuidgen)"
+mkdir -p "$FRAGMENTS" "$PROCESS_FRAGMENTS" "$OUTPUT/workspace" "$OUTPUT/private"
+chmod 700 "$OUTPUT/private"
+
+write_private_password() {
+  local path="$1"
+  local suffix="$2"
+  printf '%s' "${HOTSPOT_PROOF_PASSWORD_SENTINEL:?missing proof password sentinel}-$suffix" > "$path"
+  chmod 600 "$path"
+}
+
+run_worker() {
+  local action="$1"
+  local workspace="$2"
+  local private_root="$3"
+  local launch_id="$4"
+  local readback="$5"
+  shift 5
+  "$WORKER" \
+    --action "$action" \
+    --workspace "$workspace" \
+    --private-root "$private_root" \
+    --launch-id "$launch_id" \
+    --readback "$readback" \
+    "$@"
+}
+
+run_fault_scenario() {
+  local name="$1"
+  local fault="$2"
+  local directory="$OUTPUT/workspace/$name"
+  local private_root="$OUTPUT/private/$name/private"
+  local old_password="$private_root/old-password"
+  local new_password="$private_root/new-password"
+  local seed="$directory/seed.json"
+  local result="$directory/fault.json"
+  local seed_launch
+  local fault_launch
+
+  mkdir -p "$directory" "$private_root"
+  chmod 700 "$private_root"
+  write_private_password "$old_password" "$name-old"
+  write_private_password "$new_password" "$name-new"
+  seed_launch="$(/usr/bin/uuidgen)"
+  fault_launch="$(/usr/bin/uuidgen)"
+
+  run_worker seed "$directory" "$private_root" "$seed_launch" "$seed" \
+    --ssid "Old iPhone" --wifi-device en0 --password-file "$old_password" \
+    > "$directory/seed.stdout.txt" 2> "$directory/seed.stderr.txt"
+  run_worker save "$directory" "$private_root" "$fault_launch" "$result" \
+    --ssid "New iPhone" --wifi-device en0 --password-file "$new_password" \
+    --fault "$fault" \
+    > "$directory/fault.stdout.txt" 2> "$directory/fault.stderr.txt"
+
+  jq -n \
+    --arg name "$name" \
+    --slurpfile seed "$seed" \
+    --slurpfile result "$result" '
+      ($seed[0]) as $before |
+      ($result[0]) as $after |
+      {
+        name: $name,
+        launch_id: $after.launch_id,
+        pid: $after.pid,
+        discovery_state: "not_applicable",
+        options: [],
+        draft_ssid: $after.loaded_settings.hotspot_ssid,
+        committed_ssid: ($after.active_revision.ssid // null),
+        control_enabled_states: {},
+        start_eligibility: false,
+        before_revision: $before.active_revision,
+        after_revision: $after.active_revision,
+        save_journal: $after.save_journal,
+        credential_inventory: $after.credential_inventory,
+        operations: $after.operations,
+        injected_fault: $after.injected_fault,
+        error_category: $after.error_category
+      }
+    ' > "$PROCESS_FRAGMENTS/$name.json"
+}
+
+run_crash_scenario() {
+  local name="$1"
+  local checkpoint="$2"
+  local directory="$OUTPUT/workspace/$name"
+  local private_root="$OUTPUT/private/$name/private"
+  local old_password="$private_root/old-password"
+  local new_password="$private_root/new-password"
+  local seed="$directory/seed.json"
+  local marker="$directory/checkpoint-marker.json"
+  local recovery="$directory/recovery.json"
+  local seed_launch
+  local crash_launch
+  local recovery_launch
+  local crash_pid
+  local wait_status
+  local marker_ready=false
+
+  mkdir -p "$directory" "$private_root"
+  chmod 700 "$private_root"
+  write_private_password "$old_password" "$name-old"
+  write_private_password "$new_password" "$name-new"
+  seed_launch="$(/usr/bin/uuidgen)"
+  crash_launch="$(/usr/bin/uuidgen)"
+  recovery_launch="$(/usr/bin/uuidgen)"
+
+  run_worker seed "$directory" "$private_root" "$seed_launch" "$seed" \
+    --ssid "Old iPhone" --wifi-device en0 --password-file "$old_password" \
+    > "$directory/seed.stdout.txt" 2> "$directory/seed.stderr.txt"
+
+  "$WORKER" \
+    --action save \
+    --workspace "$directory" \
+    --private-root "$private_root" \
+    --launch-id "$crash_launch" \
+    --readback "$directory/killed-readback.json" \
+    --ssid "New iPhone" \
+    --wifi-device en0 \
+    --password-file "$new_password" \
+    --checkpoint "$checkpoint" \
+    --checkpoint-marker "$marker" \
+    > "$directory/crash.stdout.txt" 2> "$directory/crash.stderr.txt" &
+  crash_pid=$!
+
+  for _ in {1..500}; do
+    if [[ -s "$marker" ]]; then
+      marker_ready=true
+      break
+    fi
+    if ! kill -0 "$crash_pid" 2>/dev/null; then
+      wait "$crash_pid" || true
+      echo "Crash worker exited before checkpoint $checkpoint." >&2
+      exit 1
+    fi
+    sleep 0.02
+  done
+  if [[ "$marker_ready" != true ]]; then
+    kill -KILL "$crash_pid" 2>/dev/null || true
+    wait "$crash_pid" 2>/dev/null || true
+    echo "Timed out waiting for crash checkpoint $checkpoint." >&2
+    exit 1
+  fi
+
+  if ! jq -e \
+    --argjson expected_pid "$crash_pid" \
+    --arg launch_id "$crash_launch" \
+    --slurpfile marker "$marker" '
+      ($marker[0]) as $checkpoint |
+      .operations as $all_operations |
+      ($all_operations | map(select(.launch_id == $launch_id))) as $worker_operations |
+      $checkpoint.pid == $expected_pid
+      and $checkpoint.launch_id == $launch_id
+      and ($worker_operations | length > 0)
+      and all($worker_operations[]; .pid == $expected_pid)
+      and any($worker_operations[]; .operation == ("checkpoint_" + $checkpoint.checkpoint))
+    ' "$directory/redacted-credential-trace.json" >/dev/null; then
+    kill -KILL "$crash_pid" 2>/dev/null || true
+    wait "$crash_pid" 2>/dev/null || true
+    echo "Checkpoint marker or trace did not belong to Swift worker PID $crash_pid." >&2
+    exit 1
+  fi
+
+  kill -KILL "$crash_pid"
+  set +e
+  wait "$crash_pid"
+  wait_status=$?
+  set -e
+  if [[ $wait_status -ne 137 ]]; then
+    echo "Crash worker was not terminated by SIGKILL (status $wait_status)." >&2
+    exit 1
+  fi
+  if kill -0 "$crash_pid" 2>/dev/null; then
+    echo "Crash worker PID $crash_pid still exists after wait." >&2
+    exit 1
+  fi
+
+  run_worker recover "$directory" "$private_root" "$recovery_launch" "$recovery" \
+    > "$directory/recovery.stdout.txt" 2> "$directory/recovery.stderr.txt"
+
+  jq -n \
+    --arg name "$name" \
+    --arg launch_id "$crash_launch" \
+    --argjson pid "$crash_pid" \
+    --slurpfile seed "$seed" \
+    --slurpfile marker "$marker" \
+    --slurpfile recovery "$recovery" '
+      ($seed[0]) as $before |
+      ($marker[0]) as $checkpoint |
+      ($recovery[0]) as $after |
+      {
+        name: $name,
+        launch_id: $launch_id,
+        pid: $checkpoint.pid,
+        checkpoint_pid: $checkpoint.pid,
+        wait_status: 137,
+        process_state_after_wait: "reaped",
+        recovery_pid: $after.pid,
+        recovery_launch_id: $after.launch_id,
+        boundary: $checkpoint.boundary,
+        termination_signal: "SIGKILL",
+        discovery_state: "not_applicable",
+        options: [],
+        draft_ssid: "New iPhone",
+        committed_ssid: ($after.active_revision.ssid // null),
+        control_enabled_states: {},
+        start_eligibility: true,
+        before_revision: $before.active_revision,
+        after_revision: $after.active_revision,
+        checkpoint_journal: $checkpoint.journal,
+        save_journal: $after.save_journal,
+        credential_inventory: $after.credential_inventory,
+        operations: $after.operations
+      }
+    ' > "$PROCESS_FRAGMENTS/$name.json"
+}
+
+run_legacy_scenario() {
+  local name="legacy-migration"
+  local directory="$OUTPUT/workspace/$name"
+  local private_root="$OUTPUT/private/$name/private"
+  local password="$private_root/legacy-password"
+  local result="$directory/result.json"
+  local launch_id
+
+  mkdir -p "$directory" "$private_root"
+  chmod 700 "$private_root"
+  write_private_password "$password" "legacy"
+  launch_id="$(/usr/bin/uuidgen)"
+  run_worker legacy-migration "$directory" "$private_root" "$launch_id" "$result" \
+    --ssid "Legacy iPhone" --wifi-device "invalid device name" --password-file "$password" \
+    > "$directory/stdout.txt" 2> "$directory/stderr.txt"
+
+  jq -n --slurpfile result "$result" '
+    ($result[0]) as $after |
+    {
+      name: "legacy-migration",
+      launch_id: $after.launch_id,
+      pid: $after.pid,
+      discovery_state: "not_applicable",
+      options: [],
+      draft_ssid: $after.loaded_settings.hotspot_ssid,
+      committed_ssid: ($after.active_revision.ssid // null),
+      control_enabled_states: {},
+      start_eligibility: false,
+      before_revision: null,
+      after_revision: $after.active_revision,
+      save_journal: $after.save_journal,
+      credential_inventory: $after.credential_inventory,
+      operations: $after.operations,
+      error_category: $after.error_category
+    }
+  ' > "$PROCESS_FRAGMENTS/$name.json"
+}
+
+launch_scenario() {
+  local scenario="$1"
+  local variant="${2:-}"
+  local screenshot="${3:-}"
+  local safe_variant="${variant:-default}"
+  local launch_id
+  local fragment
+  local args
+  local pid
+
+  launch_id="$(/usr/bin/uuidgen)"
+  fragment="$FRAGMENTS/${scenario}-${safe_variant}-${launch_id}.json"
+  args=(
+    --scenario "$scenario"
+    --launch-id "$launch_id"
+    --observation "$fragment"
+  )
+  if [[ -n "$variant" ]]; then
+    args+=(--variant "$variant")
+  fi
+  if [[ -n "$screenshot" ]]; then
+    args+=(--screenshot "$screenshot")
+  fi
+
+  "$EXECUTABLE" "${args[@]}" &
+  pid=$!
+  if ! wait "$pid"; then
+    echo "Native UI proof scenario failed: $scenario ${variant:-}" >&2
+    exit 1
+  fi
+  if [[ ! -s "$fragment" ]]; then
+    echo "Native UI proof scenario produced no observation: $scenario ${variant:-}" >&2
+    exit 1
+  fi
+  jq -e --argjson expected_pid "$pid" --arg launch_id "$launch_id" '
+    .pid == $expected_pid
+    and .launch_id == $launch_id
+    and .control_state_source == "in_process_accessibility_hierarchy"
+    and (.control_enabled_states | type == "object" and length >= 6)
+    and (.rendered_elements | type == "array" and length >= 10)
+    and (.rendered_messages | type == "array" and length > 0)
+    and (.operations | type == "array" and length > 0)
+  ' "$fragment" >/dev/null
+}
+
+launch_scenario fresh-loading "" "$OUTPUT/loading-state.png"
+launch_scenario exact-discovery-order "" "$OUTPUT/results-state.png"
+
+for status in \
+  not_determined \
+  denied \
+  restricted \
+  services_disabled \
+  no_wifi_interface \
+  provider_failed \
+  completed; do
+  screenshot=""
+  if [[ "$status" == "not_determined" ]]; then
+    screenshot="$OUTPUT/permission-state.png"
+  elif [[ "$status" == "no_wifi_interface" ]]; then
+    screenshot="$OUTPUT/unavailable-state.png"
+  elif [[ "$status" == "provider_failed" ]]; then
+    screenshot="$OUTPUT/discovery-error.png"
+  elif [[ "$status" == "completed" ]]; then
+    screenshot="$OUTPUT/empty-state.png"
+  fi
+  launch_scenario discovery-status-matrix "$status" "$screenshot"
+done
+
+launch_scenario stale-refresh
+launch_scenario manual-save-after-denial "" "$OUTPUT/manual-selection.png"
+launch_scenario saved-selection-after-failure "" "$OUTPUT/saved-state.png"
+launch_scenario unsaved-draft-start
+launch_scenario double-save-race
+launch_scenario save-start-race
+launch_scenario quit-save-race save-first
+launch_scenario quit-save-race quit-first
+
+for lifecycle in preparing active restoring cleanup_required; do
+  screenshot=""
+  if [[ "$lifecycle" == "active" ]]; then
+    screenshot="$OUTPUT/locked-state.png"
+  fi
+  launch_scenario lifecycle-lock-matrix "$lifecycle" "$screenshot"
+done
+
+jq -s '{schema_version: 1, scenarios: .}' "$FRAGMENTS"/*.json > "$OUTPUT/ui-readback.json"
+
+if jq -e '.. | objects | select(has("verdict") or has("passed") or has("checks"))' \
+  "$OUTPUT/ui-readback.json" >/dev/null; then
+  echo "UI read-back contains a producer-authored verdict/check field." >&2
+  exit 1
+fi
+
+run_fault_scenario keychain-stage-failure credential_stage_failure
+run_fault_scenario keychain-verification-failure credential_verification_mismatch
+run_fault_scenario keychain-verification-read-failure credential_verification_read_failure
+run_fault_scenario pointer-commit-failure active_pointer_precommit_failure
+run_fault_scenario pointer-ambiguous-readback active_pointer_ambiguous_failure
+run_fault_scenario credential-cleanup-failure cleanup_deletion_failure
+
+run_crash_scenario crash-before-staging before_staging
+run_crash_scenario crash-after-staging after_verified_staging
+run_crash_scenario crash-after-pointer-commit after_pointer_commit
+run_crash_scenario crash-during-cleanup during_cleanup
+
+run_legacy_scenario
+
+jq -s '{schema_version: 1, scenarios: .}' \
+  "$PROCESS_FRAGMENTS"/*.json > "$OUTPUT/process-readback.json"
+jq -n \
+  --slurpfile ui "$OUTPUT/ui-readback.json" \
+  --slurpfile process "$OUTPUT/process-readback.json" '
+    {
+      schema_version: 1,
+      scenarios: ($ui[0].scenarios + $process[0].scenarios)
+    }
+  ' > "$OUTPUT/provider-readback.json"
+
+if jq -e '.. | objects | select(has("verdict") or has("passed") or has("checks"))' \
+  "$OUTPUT/provider-readback.json" >/dev/null; then
+  echo "Combined provider read-back contains a producer-authored verdict/check field." >&2
+  exit 1
+fi
+
+echo "$OUTPUT/provider-readback.json"
