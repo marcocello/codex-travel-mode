@@ -32,3 +32,12 @@
 **/.build
 **/.swiftpm-home
 **/dist
+
+# Keep personal deliverables and runtime evidence outside public commits.
+/docs/artifacts/
+/docs/interactions/
+/.private/
+/private-data/
+/privacy-backups/
+/data/private/
+/data/results/
